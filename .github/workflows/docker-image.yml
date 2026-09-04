@@ -12,7 +12,7 @@ env:
   NODE_VERSION: "24"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
   REGISTRY: registry.cn-shenzhen.aliyuncs.com
-  IMAGE_NAMESPACE: ${{ secrets.ACR_NAMESPACE }}
+  IMAGE_NAMESPACE: ${{ vars.ACR_NAMESPACE || secrets.ACR_NAMESPACE }}
 
 jobs:
   build-ui:
@@ -60,6 +60,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/amd64,linux/arm64
           file: frontend/Dockerfile
           context: ./frontend
@@ -110,6 +112,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/amd64,linux/arm64
           file: docker/Dockerfile.docreader
           context: .
@@ -144,6 +148,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/amd64,linux/arm64
           file: docker/Dockerfile.sandbox
           target: sandbox
@@ -169,6 +175,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           push: true
+          provenance: false
+          sbom: false
           platforms: linux/amd64
           file: docker/Dockerfile.sandbox
           target: cube
@@ -230,6 +238,8 @@ jobs:
         uses: docker/build-push-action@v7
         with:
           push: true
+          provenance: false
+          sbom: false
           platforms: ${{ matrix.platform }}
           file: docker/Dockerfile.app
           context: .
