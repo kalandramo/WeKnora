@@ -37,9 +37,11 @@ import (
 )
 
 // Compile-time checks for the optional IM capabilities implemented by Adapter.
-var _ im.StreamSender = (*Adapter)(nil)
-var _ im.FullOutputProgressSender = (*Adapter)(nil)
-var _ im.FileDownloader = (*Adapter)(nil)
+var (
+	_ im.StreamSender             = (*Adapter)(nil)
+	_ im.FullOutputProgressSender = (*Adapter)(nil)
+	_ im.FileDownloader           = (*Adapter)(nil)
+)
 
 var httpClient = utils.NewSSRFSafeHTTPClient(utils.SSRFSafeHTTPClientConfig{
 	Timeout:      10 * time.Second,
@@ -782,7 +784,7 @@ func buildStreamingCardJSON(region Region) string {
 		},
 		"header": map[string]interface{}{
 			"template": "blue",
-			"title":    map[string]string{"tag": "plain_text", "content": "WeKnora"},
+			"title":    map[string]string{"tag": "plain_text", "content": "Infra"},
 		},
 		"body": map[string]interface{}{
 			"elements": []map[string]interface{}{

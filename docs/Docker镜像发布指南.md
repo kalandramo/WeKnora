@@ -98,3 +98,14 @@ docker buildx build -f docker/Dockerfile.app -t weknora-app:local \
 
 - 地域写死在 `docker-image.yml` 顶部 `env.REGISTRY = registry.cn-shenzhen.aliyuncs.com`；换地域（如杭州）改此处即可。
 - 若使用 ACR 企业版，registry 域名为 `xxx-registry.cn-shenzhen.cr.aliyuncs.com`，需同步修改 `REGISTRY`。
+
+## 9. 仅 watsons 分支的 tag 才构建
+
+`docker-image.yml` 通过 `tags:` 过滤只能匹配 tag 名称，**无法按分支过滤**。因此额外增加 `check-branch` job 作为闸门：
+
+- 构建前检查打 tag 的 commit 是否属于 `watsons` 分支（`git merge-base --is-ancestor`）；
+- 输出 `build=true/false`，所有 `build-*` 与 `merge` job 均 `needs: check-branch` 且 `if: needs.check-branch.outputs.build == 'true'`；
+- 不在 `watsons` 分支打的 tag（如基于 main）会被整体跳过，且不报错。
+
+> 前置：仓库需存在 `watsons` 分支，否则 `git fetch origin watsons` 会失败。
+> 若需改为限定其它分支，把 `check-branch` job 里的分支名 `watsons` 替换即可。
