@@ -107,6 +107,19 @@ app:
   # - name: OLLAMA_BASE_URL
   #   value: "http://ollama:11434"
 
+  # -- Additional volumes for the app pod (e.g. Docker remote daemon TLS certs)
+  extraVolumes: []
+  # - name: docker-tls
+  #   secret:
+  #     secretName: weknora-docker-tls
+  #     defaultMode: 0444
+
+  # -- Additional volumeMounts for the app container
+  extraVolumeMounts: []
+  # - name: docker-tls
+  #   mountPath: /etc/weknora/docker-tls
+  #   readOnly: true
+
   # -- Service configuration
   service:
     type: ClusterIP

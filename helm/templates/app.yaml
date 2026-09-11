@@ -150,6 +150,9 @@ spec:
           volumeMounts:
             - name: data-files
               mountPath: /data/files
+            {{- with .Values.app.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           resources:
             {{- toYaml .Values.app.resources | nindent 12 }}
           {{- with .Values.app.livenessProbe }}
@@ -168,6 +171,9 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+      {{- with .Values.app.extraVolumes }}
+      {{- toYaml . | nindent 8 }}
+      {{- end }}
       {{- with .Values.app.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
