@@ -21,7 +21,20 @@ RUN if [ -n "$APK_MIRROR_ARG" ]; then \
     rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+# Optional mirror for the Rust toolchain and the crates.io index. Leave empty
+# to use the upstream defaults. Set these on hosts whose egress to
+# sh.rustup.rs / crates.io is slow or blocked (e.g. CN networks, where the
+# toolchain download alone can take ~20 minutes).
+ARG RUSTUP_DIST_SERVER_ARG
+ARG RUSTUP_UPDATE_ROOT_ARG
+ARG CARGO_REGISTRY_INDEX_ARG
+RUN if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP_DIST_SERVER_ARG"; fi && \
+    if [ -n "$RUSTUP_UPDATE_ROOT_ARG" ]; then export RUSTUP_UPDATE_ROOT="$RUSTUP_UPDATE_ROOT_ARG"; fi && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \
+    if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
+        mkdir -p /usr/local/cargo && \
+        printf '[registries.crates-io]\nprotocol = "sparse"\nindex = "%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
+    fi
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
 ARG TARGETARCH
@@ -82,11 +95,20 @@ ENV GO_VERSION=${GO_VERSION_ARG}
 ARG WITH_ANYDOC=1
 ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
+ARG RUSTUP_DIST_SERVER_ARG
+ARG RUSTUP_UPDATE_ROOT_ARG
+ARG CARGO_REGISTRY_INDEX_ARG
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     if [ "$WITH_ANYDOC" = "1" ]; then \
+        if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP_DIST_SERVER_ARG"; fi && \
+        if [ -n "$RUSTUP_UPDATE_ROOT_ARG" ]; then export RUSTUP_UPDATE_ROOT="$RUSTUP_UPDATE_ROOT_ARG"; fi && \
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable && \
+        if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
+            mkdir -p /usr/local/cargo && \
+            printf '[registries.crates-io]\nprotocol = "sparse"\nindex = "%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
+        fi && \
         ./scripts/build-anydoc-lib.sh; \
     fi
 
