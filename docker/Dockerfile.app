@@ -25,6 +25,9 @@ ENV PATH=/usr/local/cargo/bin:$PATH
 # to use the upstream defaults. Set these on hosts whose egress to
 # sh.rustup.rs / crates.io is slow or blocked (e.g. CN networks, where the
 # toolchain download alone can take ~20 minutes).
+# CARGO_REGISTRY_INDEX_ARG is the index URL without the "sparse+" prefix, e.g.
+# https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/ ; the Dockerfile adds
+# the prefix itself.
 ARG RUSTUP_DIST_SERVER_ARG
 ARG RUSTUP_UPDATE_ROOT_ARG
 ARG CARGO_REGISTRY_INDEX_ARG
@@ -33,7 +36,7 @@ RUN if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP
     curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \
     if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
         mkdir -p /usr/local/cargo && \
-        printf '[registries.crates-io]\nprotocol = "sparse"\nindex = "%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
+        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
     fi
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
@@ -107,7 +110,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
             | sh -s -- -y --profile minimal --default-toolchain stable && \
         if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
             mkdir -p /usr/local/cargo && \
-            printf '[registries.crates-io]\nprotocol = "sparse"\nindex = "%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
+            printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
         fi && \
         ./scripts/build-anydoc-lib.sh; \
     fi
