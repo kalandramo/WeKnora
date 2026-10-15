@@ -25,19 +25,16 @@ ENV PATH=/usr/local/cargo/bin:$PATH
 # to use the upstream defaults. Set these on hosts whose egress to
 # sh.rustup.rs / crates.io is slow or blocked (e.g. CN networks, where the
 # toolchain download alone can take ~20 minutes).
-# CARGO_REGISTRY_INDEX_ARG is the index URL without the "sparse+" prefix, e.g.
-# https://mirrors.tuna.tsinghua.edu.cn/crates.io-index/ ; the Dockerfile adds
-# the prefix itself.
+# CARGO_CRATES_IO_INDEX_ARG is exported as CARGO_REGISTRIES_CRATES_IO_INDEX,
+# cargo's own variable for pointing at an alternative index. The value must
+# carry the protocol prefix, e.g. sparse+https://<host>/crates.io-index/. It is
+# deliberately not named CARGO_REGISTRY_INDEX_ARG: build args are injected as
+# environment variables, and cargo treats CARGO_REGISTRY_INDEX as its
+# registry-publish setting and rejects the build when that name is present.
 ARG RUSTUP_DIST_SERVER_ARG
 ARG RUSTUP_UPDATE_ROOT_ARG
-ARG CARGO_REGISTRY_INDEX_ARG
-RUN if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP_DIST_SERVER_ARG"; fi && \
-    if [ -n "$RUSTUP_UPDATE_ROOT_ARG" ]; then export RUSTUP_UPDATE_ROOT="$RUSTUP_UPDATE_ROOT_ARG"; fi && \
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable && \
-    if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
-        mkdir -p /usr/local/cargo && \
-        printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
-    fi
+ARG CARGO_CRATES_IO_INDEX_ARG
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
 ARG TARGETARCH
@@ -100,18 +97,17 @@ ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
 ENV PATH=/usr/local/cargo/bin:$PATH
 ARG RUSTUP_DIST_SERVER_ARG
 ARG RUSTUP_UPDATE_ROOT_ARG
-ARG CARGO_REGISTRY_INDEX_ARG
+ARG CARGO_CRATES_IO_INDEX_ARG
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     if [ "$WITH_ANYDOC" = "1" ]; then \
         if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP_DIST_SERVER_ARG"; fi && \
         if [ -n "$RUSTUP_UPDATE_ROOT_ARG" ]; then export RUSTUP_UPDATE_ROOT="$RUSTUP_UPDATE_ROOT_ARG"; fi && \
+        if [ -n "$CARGO_CRATES_IO_INDEX_ARG" ]; then \
+            export CARGO_REGISTRIES_CRATES_IO_INDEX="$CARGO_CRATES_IO_INDEX_ARG"; \
+        fi && \
         curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable && \
-        if [ -n "$CARGO_REGISTRY_INDEX_ARG" ]; then \
-            mkdir -p /usr/local/cargo && \
-            printf '[source.crates-io]\nreplace-with = "mirror"\n\n[source.mirror]\nregistry = "sparse+%s"\n' "$CARGO_REGISTRY_INDEX_ARG" > /usr/local/cargo/config.toml; \
-        fi && \
         ./scripts/build-anydoc-lib.sh; \
     fi
 
