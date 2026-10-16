@@ -32,7 +32,11 @@ output_dir="$(cd "$output_dir" && pwd)"
 build_dir="$(mktemp -d /tmp/weknora-bsk-build.XXXXXX)"
 trap 'rm -rf "$build_dir"' EXIT
 
-git clone --no-checkout https://github.com/Tencent/BrowserSkill.git "$build_dir/source"
+# Repository to build from. Overridable for hosts that cannot reach
+# github.com directly; a mirror or proxy URL works as long as it serves the
+# same history.
+browserskill_repo="${BROWSERSKILL_REPO_URL:-https://github.com/Tencent/BrowserSkill.git}"
+git clone --no-checkout "$browserskill_repo" "$build_dir/source"
 git -C "$build_dir/source" checkout --detach "$source_commit"
 (
   cd "$build_dir/source"
