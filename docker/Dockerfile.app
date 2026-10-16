@@ -34,11 +34,21 @@ ENV PATH=/usr/local/cargo/bin:$PATH
 ARG RUSTUP_DIST_SERVER_ARG
 ARG RUSTUP_UPDATE_ROOT_ARG
 ARG CARGO_CRATES_IO_INDEX_ARG
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    if [ -n "$RUSTUP_DIST_SERVER_ARG" ]; then export RUSTUP_DIST_SERVER="$RUSTUP_DIST_SERVER_ARG"; fi && \
+    if [ -n "$RUSTUP_UPDATE_ROOT_ARG" ]; then export RUSTUP_UPDATE_ROOT="$RUSTUP_UPDATE_ROOT_ARG"; fi && \
+    if [ -n "$CARGO_CRATES_IO_INDEX_ARG" ]; then \
+        export CARGO_REGISTRIES_CRATES_IO_INDEX="$CARGO_CRATES_IO_INDEX_ARG"; \
+    fi && \
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+        | sh -s -- -y --profile minimal --default-toolchain stable
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
 ARG TARGETARCH
-RUN bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"
 
 # Build stage
 FROM golang:1.26-bookworm AS builder
