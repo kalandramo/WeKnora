@@ -46,8 +46,13 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 COPY scripts/build_browserskill.sh scripts/browserskill-release.json ./scripts/
 ARG TARGETOS
 ARG TARGETARCH
+# Override when github.com is unreachable from the build host (e.g. air-gapped
+# or filtered networks). Must serve the same BrowserSkill history, since the
+# pinned commit is checked out after the clone.
+ARG BROWSERSKILL_REPO_URL
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
+    if [ -n "$BROWSERSKILL_REPO_URL" ]; then export BROWSERSKILL_REPO_URL="$BROWSERSKILL_REPO_URL"; fi && \
     bash scripts/build_browserskill.sh /opt/weknora/browserskill "${TARGETOS}/${TARGETARCH}"
 
 # Build stage
