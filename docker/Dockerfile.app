@@ -87,7 +87,14 @@ COPY go.mod go.sum ./
 COPY third_party/anydoc-go/go.mod third_party/anydoc-go/go.mod
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY cmd/download cmd/download
-RUN go run cmd/download/duckdb/duckdb.go
+# DuckDB 默认从 http://extensions.duckdb.org 拉扩展；在明文 HTTP 被准入网关
+# 拦截的内网中会返回 HTML，导致 "Input is not a GZIP stream"。
+# 传入 https://extensions.duckdb.org 可强制走 HTTPS；不传保持上游行为。
+ARG DUCKDB_EXTENSION_REPOSITORY_ARG
+RUN if [ -n "$DUCKDB_EXTENSION_REPOSITORY_ARG" ]; then \
+        export DUCKDB_EXTENSION_REPOSITORY="$DUCKDB_EXTENSION_REPOSITORY_ARG"; \
+    fi && \
+    go run cmd/download/duckdb/duckdb.go
 COPY . .
 RUN --mount=type=cache,target=/go/pkg/mod bash ./scripts/copy-licenses.sh /license-bundle
 
