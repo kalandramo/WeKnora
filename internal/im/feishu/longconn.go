@@ -183,8 +183,14 @@ func convertEvent(region Region, botOpenID string, event *larkim.P2MessageReceiv
 
 	// Sender info
 	openID := ""
-	if event.Event.Sender != nil && event.Event.Sender.SenderId != nil && event.Event.Sender.SenderId.OpenId != nil {
-		openID = *event.Event.Sender.SenderId.OpenId
+	senderType := ""
+	if event.Event.Sender != nil {
+		if event.Event.Sender.SenderId != nil && event.Event.Sender.SenderId.OpenId != nil {
+			openID = *event.Event.Sender.SenderId.OpenId
+		}
+		if event.Event.Sender.SenderType != nil {
+			senderType = *event.Event.Sender.SenderType
+		}
 	}
 
 	// Chat type
@@ -203,18 +209,28 @@ func convertEvent(region Region, botOpenID string, event *larkim.P2MessageReceiv
 		messageID = *msg.MessageId
 	}
 
+	var incoming *im.IncomingMessage
 	switch msgType {
 	case "text":
-		return convertTextEvent(region, msg, openID, chatID, chatType, messageID)
+		incoming = convertTextEvent(region, msg, openID, chatID, chatType, messageID)
 	case "file":
-		return convertFileEvent(region, msg, openID, chatID, chatType, messageID)
+		incoming = convertFileEvent(region, msg, openID, chatID, chatType, messageID)
 	case "image":
-		return convertImageEvent(region, msg, openID, chatID, chatType, messageID)
+		incoming = convertImageEvent(region, msg, openID, chatID, chatType, messageID)
 	case "post":
-		return convertPostEvent(region, msg, openID, chatID, chatType, messageID)
+		incoming = convertPostEvent(region, msg, openID, chatID, chatType, messageID)
 	default:
 		return nil
 	}
+	if incoming != nil {
+		// Stamp the platform's sender classification ("user" / "app") so the
+		// service-side bot-sender ACL can apply (see im/sender_acl.go).
+		if incoming.Extra == nil {
+			incoming.Extra = make(map[string]string, 1)
+		}
+		incoming.Extra[im.SenderTypeExtraKey] = senderType
+	}
+	return incoming
 }
 
 // mentionsBot reports whether a Feishu group event explicitly @-mentions this

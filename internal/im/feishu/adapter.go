@@ -362,7 +362,8 @@ type feishuMessage struct {
 }
 
 type feishuSender struct {
-	SenderID *feishuSenderID `json:"sender_id"`
+	SenderID   *feishuSenderID `json:"sender_id"`
+	SenderType string          `json:"sender_type"` // "user" (human) or "app" (bot application)
 }
 
 type feishuSenderID struct {
@@ -447,8 +448,12 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 
 	// Get sender info
 	openID := ""
-	if eventBody.Event.Sender != nil && eventBody.Event.Sender.SenderID != nil {
-		openID = eventBody.Event.Sender.SenderID.OpenID
+	senderType := ""
+	if eventBody.Event.Sender != nil {
+		if eventBody.Event.Sender.SenderID != nil {
+			openID = eventBody.Event.Sender.SenderID.OpenID
+		}
+		senderType = eventBody.Event.Sender.SenderType
 	}
 
 	switch msg.MessageType {
@@ -483,6 +488,7 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 			Content:     strings.TrimSpace(content),
 			MessageID:   msg.MessageID,
 			ThreadID:    threadID,
+			Extra:       map[string]string{im.SenderTypeExtraKey: senderType},
 		}, nil
 
 	case "file":
@@ -506,6 +512,7 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 			ThreadID:    threadID,
 			FileKey:     fileContent.FileKey,
 			FileName:    fileContent.FileName,
+			Extra:       map[string]string{im.SenderTypeExtraKey: senderType},
 		}, nil
 
 	case "image":
@@ -528,6 +535,7 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 			ThreadID:    threadID,
 			FileKey:     imageContent.ImageKey,
 			FileName:    imageContent.ImageKey + ".png",
+			Extra:       map[string]string{im.SenderTypeExtraKey: senderType},
 		}, nil
 
 	case "post":
@@ -589,6 +597,7 @@ func (a *Adapter) ParseCallback(c *gin.Context) (*im.IncomingMessage, error) {
 			Content:     content,
 			MessageID:   msg.MessageID,
 			ThreadID:    threadID,
+			Extra:       map[string]string{im.SenderTypeExtraKey: senderType},
 		}, nil
 
 	default:

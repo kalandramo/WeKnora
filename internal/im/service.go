@@ -1698,6 +1698,16 @@ func (s *Service) isDuplicate(ctx context.Context, messageID string) bool {
 
 // HandleMessage processes an incoming IM message end-to-end using channel config.
 func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, channelID string) error {
+	// Bot-sender ACL: drop messages from other applications unless the sender
+	// is whitelisted via IM_BOT_SENDER_WHITELIST. Human senders always pass.
+	// Checked before dedup so unauthorized senders never touch shared state.
+	// See sender_acl.go.
+	if !AllowBotSender(msg) {
+		logger.Infof(ctx, "[IM] Dropped bot-sender message: platform=%s user=%s msgid=%s (not whitelisted via %s)",
+			msg.Platform, msg.UserID, msg.MessageID, EnvIMBotSenderWhitelist)
+		return nil
+	}
+
 	// Dedup: skip if this message was already processed (IM platforms may retry)
 	if msg.MessageID != "" {
 		if s.isDuplicate(ctx, msg.MessageID) {
