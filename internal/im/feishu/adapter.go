@@ -363,7 +363,7 @@ type feishuMessage struct {
 
 type feishuSender struct {
 	SenderID   *feishuSenderID `json:"sender_id"`
-	SenderType string          `json:"sender_type"` // "user" (human) or "app" (bot application)
+	SenderType string          `json:"sender_type"` // "user" (human) / "bot" (bot identity) / "app" (app identity)
 }
 
 type feishuSenderID struct {

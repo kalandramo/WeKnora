@@ -71,6 +71,53 @@ func TestAllowBotSender(t *testing.T) {
 		}
 	})
 
+	// Regression: Feishu reports sender_type "bot" (not "app") for messages
+	// posted by a bot identity, e.g. a custom bot replying in a group. Gating
+	// only "app" left that path wide open.
+	t.Run("feishu bot sender_type is blocked by default", func(t *testing.T) {
+		botSenderAllowList = nil
+		msg := &IncomingMessage{
+			UserID: "ou_bd657364e66bb2748e18cc35a95a6a6a",
+			Extra:  map[string]string{SenderTypeExtraKey: SenderTypeBot},
+		}
+		if AllowBotSender(msg) {
+			t.Fatal(`sender_type "bot" must be subject to the whitelist`)
+		}
+	})
+
+	t.Run("unknown non-user sender_type is treated as automation", func(t *testing.T) {
+		botSenderAllowList = nil
+		msg := &IncomingMessage{
+			UserID: "ou_mystery",
+			Extra:  map[string]string{SenderTypeExtraKey: "system"},
+		}
+		if AllowBotSender(msg) {
+			t.Fatal("unrecognised non-user sender_type must not bypass the whitelist")
+		}
+	})
+
+	t.Run("empty sender_type keeps pre-ACL behaviour", func(t *testing.T) {
+		botSenderAllowList = nil
+		msg := &IncomingMessage{
+			UserID: "ou_no_type",
+			Extra:  map[string]string{SenderTypeExtraKey: "  "},
+		}
+		if !AllowBotSender(msg) {
+			t.Fatal("blank sender_type must pass (other platforms / older events)")
+		}
+	})
+
+	t.Run("whitelisted sender_type bot passes", func(t *testing.T) {
+		botSenderAllowList = parseBotSenderWhitelist("ou_bot_ok")
+		msg := &IncomingMessage{
+			UserID: "ou_bot_ok",
+			Extra:  map[string]string{SenderTypeExtraKey: SenderTypeBot},
+		}
+		if !AllowBotSender(msg) {
+			t.Fatal(`whitelisted sender_type "bot" must pass`)
+		}
+	})
+
 	t.Run("whitelisted bot sender passes", func(t *testing.T) {
 		botSenderAllowList = parseBotSenderWhitelist("ou_bot_ok")
 		msg := &IncomingMessage{
