@@ -223,8 +223,10 @@ func convertEvent(region Region, botOpenID string, event *larkim.P2MessageReceiv
 		return nil
 	}
 	if incoming != nil {
-		// Stamp the platform's sender classification ("user" / "app") so the
-		// service-side bot-sender ACL can apply (see im/sender_acl.go).
+		// Stamp the platform's sender classification ("user" / "bot" / "app")
+		// so the service-side automated-sender ACL can apply (see
+		// im/sender_acl.go). Feishu uses "bot" — not "app" — for messages
+		// posted by a bot identity, so both must be reported verbatim.
 		if incoming.Extra == nil {
 			incoming.Extra = make(map[string]string, 1)
 		}
