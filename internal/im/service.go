@@ -2863,13 +2863,41 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 	defer ticker.Stop()
 	fileResolver := s.newOutboundFileServiceResolver(tenant, customAgent, kbIDs)
 
+	// Quiet-thinking policy (IM_STREAM_HIDE_THINKING): hold the card on its
+	// placeholder until the answer starts, then stream that answer normally.
+	// answerPushed tracks whether the card currently shows answer text, so a
+	// withheld frame can put the placeholder back instead of leaving a preamble
+	// that a tool call has since retracted.
+	hideThinking := IMStreamHideThinking()
+	placeholder := IMThinkingPlaceholder(adapter)
+	answerPushed := false
+
 	flush := func() {
 		bufMu.Lock()
 		parts := getStreamParts()
 		agentRunning := useAgent && !agentDone
 		bufMu.Unlock()
 
-		displaySource := FormatIMIntermediateFromParts(parts, agentRunning)
+		if !ShouldPushStreamFrame(parts, hideThinking) {
+			if answerPushed && placeholder != "" {
+				if err := streamer.UpdateStreamContent(ctx, msg, streamID, placeholder); err != nil {
+					logger.Warnf(ctx, "[IM] Restore thinking placeholder failed: %v", err)
+				} else {
+					answerPushed = false
+				}
+			}
+			return
+		}
+
+		// Quiet-thinking frames carry the answer only: the composed intermediate
+		// frame would prepend the think block (thoughts, retracted preamble, tool
+		// rows), which is exactly what this policy keeps off the card.
+		var displaySource string
+		if hideThinking {
+			displaySource = StripThinkBlocks(IMAnswerText(parts))
+		} else {
+			displaySource = FormatIMIntermediateFromParts(parts, agentRunning)
+		}
 		if displaySource == "" {
 			return
 		}
@@ -2879,8 +2907,13 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		}
 
 		display := cleanIMContent(ctx, displaySource, fileResolver)
+		if display == "" {
+			return
+		}
 		if err := streamer.UpdateStreamContent(ctx, msg, streamID, display); err != nil {
 			logger.Warnf(ctx, "[IM] UpdateStreamContent failed: %v", err)
+		} else {
+			answerPushed = true
 		}
 	}
 

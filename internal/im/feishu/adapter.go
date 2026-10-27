@@ -247,6 +247,13 @@ func (a *Adapter) SupportsFullOutputProgress() bool {
 	return true
 }
 
+// ThinkingPlaceholder reports the text the streaming card shows before the first
+// answer chunk, so the quiet-thinking policy can restore it after withholding a
+// frame (see im/stream_visibility.go). Must match buildStreamingCardJSON.
+func (a *Adapter) ThinkingPlaceholder() string {
+	return "💭 " + a.region.ThinkingText
+}
+
 // VerifyCallback verifies the Feishu event callback by checking the verification token.
 // If no verification token is configured (e.g., WebSocket mode), skip verification.
 func (a *Adapter) VerifyCallback(c *gin.Context) error {
@@ -1008,6 +1015,17 @@ func (a *Adapter) UpdateStreamContent(ctx context.Context, incoming *im.Incoming
 	state, ok := lookupStream(streamID)
 	if !ok {
 		return fmt.Errorf("unknown stream ID: %s", streamID)
+	}
+
+	// Skip no-op repaints. The flush loop ticks every 300ms, and the assembled
+	// content often has not changed between ticks (a long tool call, or the
+	// quiet-thinking hold). Each skipped call is one fewer CardKit request
+	// against the tenant token budget.
+	state.mu.Lock()
+	unchanged := state.contentSeq > 0 && state.content.String() == fullContent
+	state.mu.Unlock()
+	if unchanged {
+		return nil
 	}
 
 	state.mu.Lock()
