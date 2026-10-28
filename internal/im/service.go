@@ -1708,6 +1708,20 @@ func (s *Service) HandleMessage(ctx context.Context, msg *IncomingMessage, chann
 		return nil
 	}
 
+	// @all gate: a message that mentions everyone is a broadcast, not a
+	// question addressed to this assistant. Answering it would post a reply
+	// into the group for every member to see, including members who are not
+	// entitled to whatever the knowledge base returned. Applies to every
+	// sender, whitelisted bots included. Checked next to the ACL for the same
+	// reason: neither may touch shared state before the message is accepted.
+	// The flag is set by the adapter because a mention-everyone is not
+	// recoverable from Content on every platform. See at_all.go.
+	if IsAtAllMessage(msg) {
+		logger.Infof(ctx, "[IM] Dropped at-all message: platform=%s chat=%s user=%s msgid=%s",
+			msg.Platform, msg.ChatID, msg.UserID, msg.MessageID)
+		return nil
+	}
+
 	// Dedup: skip if this message was already processed (IM platforms may retry)
 	if msg.MessageID != "" {
 		if s.isDuplicate(ctx, msg.MessageID) {
