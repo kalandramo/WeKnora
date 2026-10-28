@@ -291,7 +291,7 @@ func convertTextEvent(
 
 	content := renderTextMentions(textContent.Text, msg.Mentions, botOpenID, chatType)
 
-	return &im.IncomingMessage{
+	incoming := &im.IncomingMessage{
 		Platform:    region.Platform,
 		MessageType: im.MessageTypeText,
 		UserID:      openID,
@@ -300,6 +300,14 @@ func convertTextEvent(
 		Content:     strings.TrimSpace(content),
 		MessageID:   messageID,
 	}
+	// Detect "@all" on the raw text rather than on content above: only
+	// "@_user_" prefixes are stripped there, so the escaped "@//_all/" token
+	// survives either way — but the raw value is the authoritative source and
+	// stays correct if the stripping rules ever change.
+	if im.ContainsAtAllToken(textContent.Text) {
+		im.MarkAtAll(incoming)
+	}
+	return incoming
 }
 
 // convertFileEvent handles file message type.
@@ -386,6 +394,7 @@ func convertPostEvent(
 
 	var textParts []string
 	imageKey := ""
+	atAll := false
 	if postContent.Title != "" {
 		textParts = append(textParts, postContent.Title)
 	}
@@ -397,7 +406,10 @@ func convertPostEvent(
 				Tag      string `json:"tag"`
 				Text     string `json:"text"`
 				ImageKey string `json:"image_key"`
-				UserID   string `json:"user_id"`
+				// UserID identifies the mentioned party on an "at" element.
+				// Feishu uses "@_all" for a mention-everyone, so this is where
+				// the flag is observable in a post's raw element.
+				UserID string `json:"user_id"`
 			}
 			if err := json.Unmarshal(elem, &tag); err != nil {
 				continue
@@ -410,7 +422,13 @@ func convertPostEvent(
 					imageKey = tag.ImageKey
 				}
 			case "at":
+				// Render the mention for the answer, and remember a
+				// mention-everyone: the message is a broadcast that must
+				// not be answered.
 				lineText.WriteString(renderPostMention(tag.UserID, msg.Mentions, botOpenID, chatType))
+				if im.IsAtAllToken(tag.UserID) {
+					atAll = true
+				}
 			}
 		}
 		if t := strings.TrimSpace(lineText.String()); t != "" {
@@ -432,7 +450,7 @@ func convertPostEvent(
 		fileName = imageKey + ".png"
 	}
 
-	return &im.IncomingMessage{
+	incoming := &im.IncomingMessage{
 		Platform:    region.Platform,
 		MessageType: messageType,
 		UserID:      openID,
@@ -443,6 +461,10 @@ func convertPostEvent(
 		FileKey:     imageKey,
 		FileName:    fileName,
 	}
+	if atAll {
+		im.MarkAtAll(incoming)
+	}
+	return incoming
 }
 
 // ptrStr safely dereferences a *string for logging; returns "" for nil so the
