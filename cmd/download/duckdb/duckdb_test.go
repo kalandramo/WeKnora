@@ -1,107 +1,108 @@
 package main
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
-func TestQuoteSQLLiteral(t *testing.T) {
+// httpfs 必须排在 spatial/excel 之前：它们是按需安装 httpfs 的触发者，
+// 顺序反了构建期照样失败。
+func TestDownloadQueueOrdersDependenciesFirst(t *testing.T) {
+	got := downloadQueue()
+	if len(got) != len(duckdbExtensionDependencies)+len(duckdbExtensions) {
+		t.Fatalf("queue has %d entries, want %d: %v",
+			len(got), len(duckdbExtensionDependencies)+len(duckdbExtensions), got)
+	}
+	for i, dep := range duckdbExtensionDependencies {
+		if got[i] != dep {
+			t.Fatalf("queue[%d] = %q, want dependency %q (full queue: %v)", i, got[i], dep, got)
+		}
+	}
+	for _, ext := range duckdbExtensions {
+		if !contains(got, ext) {
+			t.Fatalf("%q missing from queue: %v", ext, got)
+		}
+	}
+}
+
+func contains(haystack []string, needle string) bool {
+	for _, s := range haystack {
+		if s == needle {
+			return true
+		}
+	}
+	return false
+}
+
+// URL 必须是 .duckdb_extension.gz。少这个后缀就是线上踩过的坑：
+// DuckDB 自己拼出来的是不带 .gz 的路径，官方仓库返回 404。
+func TestExtensionArchiveURL(t *testing.T) {
 	cases := []struct {
-		name string
-		in   string
-		want string
+		name     string
+		repo     string
+		version  string
+		platform string
+		ext      string
+		want     string
 	}{
-		{"no quote", "https://extensions.duckdb.org", "https://extensions.duckdb.org"},
-		{"single quote", "https://host/o'brien", "https://host/o''brien"},
-		{"empty", "", ""},
+		{
+			name:     "official repository",
+			repo:     "https://extensions.duckdb.org",
+			version:  "v1.5.2",
+			platform: "linux_amd64",
+			ext:      "httpfs",
+			want:     "https://extensions.duckdb.org/v1.5.2/linux_amd64/httpfs.duckdb_extension.gz",
+		},
+		{
+			name:     "trailing slash is normalised",
+			repo:     "https://extensions.duckdb.org/",
+			version:  "v1.5.2",
+			platform: "linux_amd64",
+			ext:      "spatial",
+			want:     "https://extensions.duckdb.org/v1.5.2/linux_amd64/spatial.duckdb_extension.gz",
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			repo:     "  https://extensions.duckdb.org  ",
+			version:  "v1.5.2",
+			platform: "linux_amd64",
+			ext:      "excel",
+			want:     "https://extensions.duckdb.org/v1.5.2/linux_amd64/excel.duckdb_extension.gz",
+		},
+		{
+			name:     "internal mirror with a path prefix",
+			repo:     "https://mirror.internal/duckdb",
+			version:  "v1.5.2",
+			platform: "linux_amd64",
+			ext:      "httpfs",
+			want:     "https://mirror.internal/duckdb/v1.5.2/linux_amd64/httpfs.duckdb_extension.gz",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := quoteSQLLiteral(tc.in); got != tc.want {
-				t.Fatalf("quoteSQLLiteral(%q) = %q, want %q", tc.in, got, tc.want)
+			got := extensionArchiveURL(tc.repo, tc.version, tc.platform, tc.ext)
+			if got != tc.want {
+				t.Fatalf("extensionArchiveURL(...) = %q, want %q", got, tc.want)
+			}
+			if !strings.HasSuffix(got, ".duckdb_extension.gz") {
+				t.Fatalf("URL %q lost the .gz suffix", got)
 			}
 		})
 	}
 }
 
-func TestBuildInstallStatement(t *testing.T) {
-	cases := []struct {
-		name string
-		ext  string
-		repo string
-		want string
-	}{
-		{
-			name: "empty repo keeps upstream form",
-			ext:  "spatial",
-			repo: "",
-			want: "INSTALL spatial;",
-		},
-		{
-			name: "repo pins the statement",
-			ext:  "spatial",
-			repo: "https://extensions.duckdb.org",
-			want: "INSTALL spatial FROM 'https://extensions.duckdb.org';",
-		},
-		{
-			name: "repo cannot break out of the literal",
-			ext:  "excel",
-			repo: "https://host/x'y",
-			want: "INSTALL excel FROM 'https://host/x''y';",
-		},
+// 落盘位置必须和 DuckDB 自己 INSTALL 的布局一字不差，否则 LOAD 找不到。
+// 基准来自生产报错：
+//
+//	Extension "/root/.duckdb/extensions/v1.5.2/linux_amd64/httpfs.duckdb_extension" not found
+func TestExtensionTargetPathMatchesDuckDBLayout(t *testing.T) {
+	got := extensionTargetPath("/root/.duckdb/extensions", "v1.5.2", "linux_amd64", "httpfs")
+	want := filepath.Join("/root/.duckdb/extensions", "v1.5.2", "linux_amd64", "httpfs.duckdb_extension")
+	if got != want {
+		t.Fatalf("extensionTargetPath(...) = %q, want %q", got, want)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := buildInstallStatement(tc.ext, tc.repo); got != tc.want {
-				t.Fatalf("buildInstallStatement(%q, %q) = %q, want %q", tc.ext, tc.repo, got, tc.want)
-			}
-		})
-	}
-}
-
-func TestBuildRepositoryStatements(t *testing.T) {
-	t.Run("empty repo yields nothing", func(t *testing.T) {
-		for _, repo := range []string{"", "   "} {
-			if got := buildRepositoryStatements(repo); got != nil {
-				t.Fatalf("buildRepositoryStatements(%q) = %v, want nil", repo, got)
-			}
-		}
-	})
-
-	t.Run("both spellings are emitted", func(t *testing.T) {
-		got := buildRepositoryStatements("https://extensions.duckdb.org")
-		want := []string{
-			"SET autoinstall_extension_repository = 'https://extensions.duckdb.org';",
-			"SET custom_extension_repository = 'https://extensions.duckdb.org';",
-		}
-		if len(got) != len(want) {
-			t.Fatalf("got %d statements, want %d: %v", len(got), len(want), got)
-		}
-		for i := range want {
-			if got[i] != want[i] {
-				t.Fatalf("statement %d = %q, want %q", i, got[i], want[i])
-			}
-		}
-	})
-
-	t.Run("repo is escaped", func(t *testing.T) {
-		for _, stmt := range buildRepositoryStatements("https://host/o'brien") {
-			if !strings.Contains(stmt, "o''brien") {
-				t.Fatalf("statement %q does not escape the quote", stmt)
-			}
-		}
-	})
-}
-
-// The on-demand repository setting is what the failure hinges on: without it,
-// httpfs is fetched over the compile-time default of plain HTTP. Guard the two
-// names against an accidental rename.
-func TestRepositorySettingNames(t *testing.T) {
-	got := buildRepositoryStatements("https://example.test")
-	joined := strings.Join(got, " ")
-	for _, name := range []string{"autoinstall_extension_repository", "custom_extension_repository"} {
-		if !strings.Contains(joined, name) {
-			t.Fatalf("%s missing from generated statements: %v", name, got)
-		}
+	if strings.HasSuffix(got, ".gz") {
+		t.Fatalf("target %q should be the decompressed file, not the archive", got)
 	}
 }
