@@ -39,3 +39,26 @@ func TestLLMErrorStatus(t *testing.T) {
 		})
 	}
 }
+
+// TestMetricModelLabel locks in the model-label value: the wire model name is
+// what the vendor bills quotas against, so it must win over WeKnora's internal
+// ID; empty configuration must never produce an empty label value.
+func TestMetricModelLabel(t *testing.T) {
+	cases := []struct {
+		name string
+		ep   api.Endpoint
+		want string
+	}{
+		{"wire name preferred", api.Endpoint{Model: "qwen3-27b", ModelID: "uuid-1"}, "qwen3-27b"},
+		{"trims spaces", api.Endpoint{Model: "  qwen3-27b  "}, "qwen3-27b"},
+		{"falls back to model id", api.Endpoint{ModelID: "uuid-1"}, "uuid-1"},
+		{"unknown when both empty", api.Endpoint{}, "unknown"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := New(Config{Endpoint: c.ep}).metricModel(); got != c.want {
+				t.Fatalf("metricModel() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}

@@ -77,22 +77,37 @@ func llmErrorStatus(err error) string {
 	return "error"
 }
 
+// metricModel returns the label value for the "model" dimension. It prefers
+// the wire model name (what the vendor recognises and what quotas are billed
+// against); falls back to WeKnora's model ID, then to "unknown" so a
+// misconfigured model never yields an empty label value.
+func (c *Client) metricModel() string {
+	if name := strings.TrimSpace(c.cfg.Endpoint.Model); name != "" {
+		return name
+	}
+	if id := strings.TrimSpace(c.cfg.Endpoint.ModelID); id != "" {
+		return id
+	}
+	return "unknown"
+}
+
 func (c *Client) send(
 	ctx context.Context, messages []api.Message, opts *api.Options, stream bool,
 ) (*http.Response, []byte, error) {
 	purpose, _ := types.LLMCallMetadataFromContext(ctx)
-	metrics.LLMInflight.Inc()
+	model := c.metricModel()
+	metrics.LLMInflight.WithLabelValues(model).Inc()
 
 	opts = api.WithSessionCacheKey(ctx, opts)
 	body, err := c.BuildRequestBody(messages, opts, stream)
 	if err != nil {
-		metrics.LLMInflight.Dec()
+		metrics.LLMInflight.WithLabelValues(model).Dec()
 		return nil, nil, err
 	}
 	url := c.url()
 	req, data, err := c.cfg.Endpoint.NewRequest(ctx, url, body, stream)
 	if err != nil {
-		metrics.LLMInflight.Dec()
+		metrics.LLMInflight.WithLabelValues(model).Dec()
 		return nil, nil, err
 	}
 	if c.cfg.Settings.PromptCacheKey {
@@ -105,17 +120,19 @@ func (c *Client) send(
 	api.LogRequest(ctx, url, c.cfg.Endpoint.Model, data, stream)
 	// Count the attempt only once we are about to hit the wire, so build or
 	// request-construction failures do not inflate the sent-request total.
-	metrics.LLMTotal.WithLabelValues(purpose).Inc()
+	metrics.LLMTotal.WithLabelValues(model, purpose).Inc()
 	resp, err := c.cfg.Endpoint.Do(req)
 	if err != nil {
-		metrics.LLMInflight.Dec()
-		metrics.LLMRequestErrors.WithLabelValues(purpose, llmErrorStatus(err)).Inc()
+		metrics.LLMInflight.WithLabelValues(model).Dec()
+		metrics.LLMRequestErrors.WithLabelValues(model, purpose, llmErrorStatus(err)).Inc()
 		return nil, data, err
 	}
 	// Hand off the in-flight lifetime to the response body's Close so that
 	// streaming responses are counted as in-flight until the caller fully
 	// consumes them. The error paths above decrement immediately instead.
-	resp.Body = &trackedBody{rc: resp.Body, done: metrics.LLMInflight.Dec}
+	resp.Body = &trackedBody{rc: resp.Body, done: func() {
+		metrics.LLMInflight.WithLabelValues(model).Dec()
+	}}
 	return resp, data, nil
 }
 
