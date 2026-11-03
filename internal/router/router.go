@@ -11,7 +11,6 @@ import (
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
-	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/dig"
 
 	"github.com/Tencent/WeKnora/internal/agent/operations"
@@ -21,6 +20,7 @@ import (
 	"github.com/Tencent/WeKnora/internal/handler/session"
 	"github.com/Tencent/WeKnora/internal/logger"
 	"github.com/Tencent/WeKnora/internal/mcpserver"
+	"github.com/Tencent/WeKnora/internal/metrics"
 	"github.com/Tencent/WeKnora/internal/middleware"
 	"github.com/Tencent/WeKnora/internal/tracing/langfuse"
 	"github.com/Tencent/WeKnora/internal/types/interfaces"
@@ -152,9 +152,11 @@ func NewRouter(params RouterParams) *gin.Engine {
 	})
 
 	// Prometheus 指标端点（不需要认证，供内部 Prometheus 抓取）。
-	// 暴露默认 registry 中的全部指标，含 WeKnora 自定义的
-	// weknora_llm_requests_inflight / weknora_llm_requests_total。
-	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
+	// 只暴露 WeKnora 自己的 registry：默认 registry 会被依赖包（如 Milvus
+	// 间接引入的 etcd server）在 init 时塞进大量恒为 0 的无关指标。
+	// 版本信息一并暴露，空闲时也能确认 pod 跑的是哪次构建。
+	metrics.SetBuildInfo(handler.Version, handler.CommitID)
+	r.GET("/metrics", gin.WrapH(metrics.Handler))
 
 	// Swagger API 文档（仅在非生产环境下启用）
 	// 通过 GIN_MODE 环境变量判断：release 模式下禁用 Swagger

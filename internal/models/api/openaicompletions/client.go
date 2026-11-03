@@ -91,10 +91,22 @@ func (c *Client) metricModel() string {
 	return "unknown"
 }
 
+// metricPurpose returns the label value for the "purpose" dimension. A caller
+// that never annotated its context would otherwise emit purpose="", which
+// splits one call type into two series and makes sum by (purpose) undercount
+// it. Fall back to "unknown" so the label is always populated and joinable.
+func metricPurpose(ctx context.Context) string {
+	purpose, _ := types.LLMCallMetadataFromContext(ctx)
+	if p := strings.TrimSpace(purpose); p != "" {
+		return p
+	}
+	return "unknown"
+}
+
 func (c *Client) send(
 	ctx context.Context, messages []api.Message, opts *api.Options, stream bool,
 ) (*http.Response, []byte, error) {
-	purpose, _ := types.LLMCallMetadataFromContext(ctx)
+	purpose := metricPurpose(ctx)
 	model := c.metricModel()
 	background := types.IsBackgroundTask(ctx)
 
