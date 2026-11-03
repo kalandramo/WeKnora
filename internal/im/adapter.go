@@ -171,6 +171,38 @@ type FullOutputProgressSender interface {
 	SupportsFullOutputProgress() bool
 }
 
+// IMStreamRender carries the three separable card regions of a stream frame.
+// Adapters that implement StructuredStreamSender lay these out as distinct card
+// elements (a collapsible thinking region, a tool summary region, and the answer
+// region) instead of a single streaming markdown element.
+type IMStreamRender struct {
+	// Thinking is the reasoning / retracted-preamble region. It is shown inside a
+	// collapsible block so long reasoning does not stretch the card.
+	Thinking string
+	// Tools is the tool-progress / tool-summary region.
+	Tools string
+	// Answer is the streaming or final answer text (top of the card).
+	Answer string
+}
+
+// StructuredStreamSender is an optional interface for adapters that render the
+// stream reply as separate, independently updatable card elements. It lets the
+// IM service push thinking, tools, and answer to their own regions so the card
+// stays compact (collapsible thinking) and can show a tool summary at the end.
+//
+// Adapters that do not implement it keep the original single-element streaming
+// behaviour (StreamSender.UpdateStreamContent), so adding this interface never
+// changes behaviour for DingTalk, Slack, Telegram, Mattermost, WeCom, etc.
+type StructuredStreamSender interface {
+	// UpdateStructuredStream pushes an intermediate frame: the three regions are
+	// written to their own card elements.
+	UpdateStructuredStream(ctx context.Context, incoming *IncomingMessage, streamID string, render IMStreamRender) error
+	// FinalizeStructuredStream pushes the final frame: the answer region gets the
+	// final answer, the tools region shows the final summary, and the thinking
+	// region is left collapsed (its content was already delivered during streaming).
+	FinalizeStructuredStream(ctx context.Context, incoming *IncomingMessage, streamID string, render IMStreamRender) error
+}
+
 // FileDownloader is an optional interface that adapters can implement to support
 // downloading file attachments from the IM platform. It allows file/image
 // messages to be supplied to QA as attachments; when a knowledge_base_id is

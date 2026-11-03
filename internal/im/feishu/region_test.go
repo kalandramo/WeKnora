@@ -145,8 +145,19 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 			} `json:"config"`
 			Body struct {
 				Elements []struct {
-					Content   string `json:"content"`
+					Tag      string `json:"tag"`
+					Content  string `json:"content"`
 					ElementID string `json:"element_id"`
+					Header   struct {
+						Title struct {
+							Content string `json:"content"`
+						} `json:"title"`
+						Folded bool `json:"folded"`
+					} `json:"header"`
+					Elements []struct {
+						Content   string `json:"content"`
+						ElementID string `json:"element_id"`
+					} `json:"elements"`
 				} `json:"elements"`
 			} `json:"body"`
 		}
@@ -160,15 +171,39 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 		if card.Config.Summary.Content != region.ThinkingText {
 			t.Errorf("%s summary = %q, want %q", region.Label, card.Config.Summary.Content, region.ThinkingText)
 		}
-		if len(card.Body.Elements) != 1 {
-			t.Fatalf("%s card has %d elements, want 1", region.Label, len(card.Body.Elements))
+		// The card is split into three regions: a collapsible thinking block
+		// (folded by default), a tool region, and the answer region on top.
+		if len(card.Body.Elements) != 3 {
+			t.Fatalf("%s card has %d elements, want 3", region.Label, len(card.Body.Elements))
 		}
-		el := card.Body.Elements[0]
-		if el.ElementID != streamingElementID {
-			t.Errorf("%s element_id = %q, want %q", region.Label, el.ElementID, streamingElementID)
+
+		thinking := card.Body.Elements[0]
+		if thinking.Tag != "collapsible" {
+			t.Errorf("%s thinking region tag = %q, want collapsible", region.Label, thinking.Tag)
 		}
-		if !strings.Contains(el.Content, region.ThinkingText) {
-			t.Errorf("%s element content %q does not contain %q", region.Label, el.Content, region.ThinkingText)
+		if !thinking.Header.Folded {
+			t.Errorf("%s thinking region should be folded by default", region.Label)
+		}
+		if len(thinking.Elements) != 1 {
+			t.Fatalf("%s thinking region has %d nested elements, want 1", region.Label, len(thinking.Elements))
+		}
+		if thinking.Elements[0].ElementID != streamThinkingElemID {
+			t.Errorf("%s thinking element_id = %q, want %q", region.Label, thinking.Elements[0].ElementID, streamThinkingElemID)
+		}
+		if !strings.Contains(thinking.Elements[0].Content, region.ThinkingText) {
+			t.Errorf("%s thinking content %q does not contain %q", region.Label, thinking.Elements[0].Content, region.ThinkingText)
+		}
+
+		tools := card.Body.Elements[1]
+		if tools.ElementID != streamToolsElemID {
+			t.Errorf("%s tools element_id = %q, want %q", region.Label, tools.ElementID, streamToolsElemID)
+		}
+		answer := card.Body.Elements[2]
+		if answer.ElementID != streamAnswerElemID {
+			t.Errorf("%s answer element_id = %q, want %q", region.Label, answer.ElementID, streamAnswerElemID)
+		}
+		if streamingElementID != streamAnswerElemID {
+			t.Errorf("streamingElementID = %q, want %q", streamingElementID, streamAnswerElemID)
 		}
 	}
 
