@@ -53,4 +53,45 @@ var (
 		Name: "weknora_llm_request_errors_total",
 		Help: "Total failed LLM requests sent by WeKnora, by model, purpose and status.",
 	}, []string{"model", "purpose", "status"})
+
+	// LLMBackgroundInflight is the subset of LLMInflight that originates from
+	// asynq background workers (ingestion, summary, graph extraction). Only
+	// these calls are gated by the per-model concurrency governor, so this is
+	// the correct numerator when comparing against
+	// weknora_llm_model_concurrency_limit: interactive chat bypasses the
+	// semaphore by design and would otherwise push utilisation past 100%.
+	LLMBackgroundInflight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "weknora_llm_background_requests_inflight",
+		Help: "Number of in-flight LLM requests originating from background workers, by model.",
+	}, []string{"model"})
+
+	// LLMModelConcurrencyLimit is the effective per-model background
+	// concurrency cap WeKnora resolved at runtime: the model's own
+	// MaxConcurrency when set, otherwise the process-wide default
+	// (WEKNORA_MODEL_MAX_CONCURRENCY, 32). Exposed so dashboards can plot
+	// utilisation and alerts can fire on a ratio instead of a hard-coded
+	// number that changes with every model.
+	//
+	// model_id is kept alongside model because the semaphore is keyed by model
+	// ID: two records sharing one wire model name get independent slots whose
+	// caps add up, so sum by (model) over this gauge is the backend's real cap.
+	LLMModelConcurrencyLimit = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "weknora_llm_model_concurrency_limit",
+		Help: "Effective per-model background concurrency limit configured in WeKnora, by model and model ID.",
+	}, []string{"model", "model_id"})
 )
+
+// SetModelConcurrencyLimit records the effective background concurrency limit
+// for one model record. Called from the concurrency governor, so the value
+// tracks runtime retuning of model.max_concurrency without a restart. An empty
+// name is rendered as "unknown" to keep the label joinable with the other
+// series.
+func SetModelConcurrencyLimit(modelID, modelName string, limit int) {
+	if modelID == "" || limit <= 0 {
+		return
+	}
+	if modelName == "" {
+		modelName = "unknown"
+	}
+	LLMModelConcurrencyLimit.WithLabelValues(modelName, modelID).Set(float64(limit))
+}

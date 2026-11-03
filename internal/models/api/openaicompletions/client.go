@@ -96,18 +96,35 @@ func (c *Client) send(
 ) (*http.Response, []byte, error) {
 	purpose, _ := types.LLMCallMetadataFromContext(ctx)
 	model := c.metricModel()
+	background := types.IsBackgroundTask(ctx)
+
 	metrics.LLMInflight.WithLabelValues(model).Inc()
+	if background {
+		// Tracked separately because only background calls are gated by the
+		// per-model concurrency governor; interactive chat bypasses it, so
+		// utilisation must compare like with like.
+		metrics.LLMBackgroundInflight.WithLabelValues(model).Inc()
+	}
+	// release frees every in-flight series this call took. It runs either on an
+	// error path below or from the response body's Close (streaming reads), but
+	// never both: successful sends hand it to trackedBody.
+	release := func() {
+		metrics.LLMInflight.WithLabelValues(model).Dec()
+		if background {
+			metrics.LLMBackgroundInflight.WithLabelValues(model).Dec()
+		}
+	}
 
 	opts = api.WithSessionCacheKey(ctx, opts)
 	body, err := c.BuildRequestBody(messages, opts, stream)
 	if err != nil {
-		metrics.LLMInflight.WithLabelValues(model).Dec()
+		release()
 		return nil, nil, err
 	}
 	url := c.url()
 	req, data, err := c.cfg.Endpoint.NewRequest(ctx, url, body, stream)
 	if err != nil {
-		metrics.LLMInflight.WithLabelValues(model).Dec()
+		release()
 		return nil, nil, err
 	}
 	if c.cfg.Settings.PromptCacheKey {
@@ -123,16 +140,14 @@ func (c *Client) send(
 	metrics.LLMTotal.WithLabelValues(model, purpose).Inc()
 	resp, err := c.cfg.Endpoint.Do(req)
 	if err != nil {
-		metrics.LLMInflight.WithLabelValues(model).Dec()
+		release()
 		metrics.LLMRequestErrors.WithLabelValues(model, purpose, llmErrorStatus(err)).Inc()
 		return nil, data, err
 	}
 	// Hand off the in-flight lifetime to the response body's Close so that
 	// streaming responses are counted as in-flight until the caller fully
 	// consumes them. The error paths above decrement immediately instead.
-	resp.Body = &trackedBody{rc: resp.Body, done: func() {
-		metrics.LLMInflight.WithLabelValues(model).Dec()
-	}}
+	resp.Body = &trackedBody{rc: resp.Body, done: release}
 	return resp, data, nil
 }
 
