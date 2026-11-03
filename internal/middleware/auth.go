@@ -35,6 +35,7 @@ var (
 // 无需认证的API列表
 var noAuthAPI = map[string][]string{
 	"/health":                 {"GET"},
+	"/metrics":                {"GET"}, // Prometheus 抓取端点，暴露指标不含敏感数据
 	"/api/v1/auth/register":   {"POST"},
 	"/api/v1/auth/login":      {"POST"},
 	"/api/v1/auth/auto-setup": {"POST"},

@@ -183,7 +183,7 @@ func Logger() gin.HandlerFunc {
 		raw := c.Request.URL.RawQuery
 
 		isWikiStats := strings.HasPrefix(path, "/api/v1/knowledgebase/") && strings.HasSuffix(path, "/wiki/stats")
-		if strings.HasPrefix(path, "/assets/") || isWikiStats {
+		if strings.HasPrefix(path, "/assets/") || isWikiStats || path == "/metrics" {
 			c.Next()
 			return
 		}

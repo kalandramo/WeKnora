@@ -11,6 +11,7 @@ import (
 	"github.com/redis/go-redis/v9"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.uber.org/dig"
 
 	"github.com/Tencent/WeKnora/internal/agent/operations"
@@ -149,6 +150,11 @@ func NewRouter(params RouterParams) *gin.Engine {
 	r.GET("/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
+
+	// Prometheus 指标端点（不需要认证，供内部 Prometheus 抓取）。
+	// 暴露默认 registry 中的全部指标，含 WeKnora 自定义的
+	// weknora_llm_requests_inflight / weknora_llm_requests_total。
+	r.GET("/metrics", gin.WrapH(promhttp.Handler()))
 
 	// Swagger API 文档（仅在非生产环境下启用）
 	// 通过 GIN_MODE 环境变量判断：release 模式下禁用 Swagger

@@ -3,12 +3,16 @@ package openaicompletions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/metrics"
 	"github.com/Tencent/WeKnora/internal/models/api"
 	"github.com/Tencent/WeKnora/internal/types"
 )
@@ -39,17 +43,56 @@ func (c *Client) Settings() Config { return c.cfg }
 
 func (c *Client) url() string { return c.cfg.Endpoint.Resolve(defaultPath) }
 
+// trackedBody wraps an http.Response.Body so that closing it also runs a
+// finalizer callback exactly once. It lets us keep the in-flight LLM counter
+// accurate through the full response lifecycle, including streaming reads that
+// happen after send() returns (the caller consumes the body in a goroutine).
+type trackedBody struct {
+	rc   io.ReadCloser
+	done func()
+	once sync.Once
+}
+
+func (b *trackedBody) Read(p []byte) (int, error) { return b.rc.Read(p) }
+
+func (b *trackedBody) Close() error {
+	err := b.rc.Close()
+	b.once.Do(b.done)
+	return err
+}
+
+// llmErrorStatus classifies an LLM send failure for the error counter: the
+// vendor's HTTP status code when it replied non-2xx (e.g. "403"), "transport"
+// for network-layer failures, or "error" otherwise. The status is read off the
+// typed error, never matched as text (see api.HTTPError / api.TransportError).
+func llmErrorStatus(err error) string {
+	var httpErr *api.HTTPError
+	if errors.As(err, &httpErr) {
+		return strconv.Itoa(httpErr.StatusCode)
+	}
+	var transportErr *api.TransportError
+	if errors.As(err, &transportErr) {
+		return "transport"
+	}
+	return "error"
+}
+
 func (c *Client) send(
 	ctx context.Context, messages []api.Message, opts *api.Options, stream bool,
 ) (*http.Response, []byte, error) {
+	purpose, _ := types.LLMCallMetadataFromContext(ctx)
+	metrics.LLMInflight.Inc()
+
 	opts = api.WithSessionCacheKey(ctx, opts)
 	body, err := c.BuildRequestBody(messages, opts, stream)
 	if err != nil {
+		metrics.LLMInflight.Dec()
 		return nil, nil, err
 	}
 	url := c.url()
 	req, data, err := c.cfg.Endpoint.NewRequest(ctx, url, body, stream)
 	if err != nil {
+		metrics.LLMInflight.Dec()
 		return nil, nil, err
 	}
 	if c.cfg.Settings.PromptCacheKey {
@@ -60,10 +103,19 @@ func (c *Client) send(
 		api.AttachSessionAffinityHeaders(req, api.ClampPromptCacheKey(key))
 	}
 	api.LogRequest(ctx, url, c.cfg.Endpoint.Model, data, stream)
+	// Count the attempt only once we are about to hit the wire, so build or
+	// request-construction failures do not inflate the sent-request total.
+	metrics.LLMTotal.WithLabelValues(purpose).Inc()
 	resp, err := c.cfg.Endpoint.Do(req)
 	if err != nil {
+		metrics.LLMInflight.Dec()
+		metrics.LLMRequestErrors.WithLabelValues(purpose, llmErrorStatus(err)).Inc()
 		return nil, data, err
 	}
+	// Hand off the in-flight lifetime to the response body's Close so that
+	// streaming responses are counted as in-flight until the caller fully
+	// consumes them. The error paths above decrement immediately instead.
+	resp.Body = &trackedBody{rc: resp.Body, done: metrics.LLMInflight.Dec}
 	return resp, data, nil
 }
 
