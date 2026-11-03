@@ -2774,6 +2774,7 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 				step.ToolName = data.ToolName
 				step.Pending = false
 				step.Success = data.Success
+				step.DurationMs = data.Duration
 				step.Data = data.Data
 				step.Output = data.Output
 			})
@@ -2783,6 +2784,7 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 				step.ToolName = data.ToolName
 				step.Pending = false
 				step.Success = data.Success
+				step.DurationMs = data.Duration
 				step.Data = data.Data
 				step.Output = data.Output
 			})
@@ -2892,6 +2894,20 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		agentRunning := useAgent && !agentDone
 		bufMu.Unlock()
 
+		// Structured adapters receive the three regions separately so the card can
+		// collapse long reasoning and show a tool summary at the end.
+		if ss, ok := streamer.(StructuredStreamSender); ok {
+			render := BuildIMStructuredRender(parts, agentRunning, hideThinking)
+			render.Thinking = cleanIMContent(ctx, render.Thinking, fileResolver)
+			render.Tools = cleanIMContent(ctx, render.Tools, fileResolver)
+			render.Answer = cleanIMContent(ctx, render.Answer, fileResolver)
+			if err := ss.UpdateStructuredStream(ctx, msg, streamID, render); err != nil {
+				logger.Warnf(ctx, "[IM] UpdateStructuredStream failed: %v", err)
+			}
+			answerPushed = strings.TrimSpace(render.Answer) != ""
+			return
+		}
+
 		if !ShouldPushStreamFrame(parts, hideThinking) {
 			if answerPushed && placeholder != "" {
 				if err := streamer.UpdateStreamContent(ctx, msg, streamID, placeholder); err != nil {
@@ -2981,7 +2997,20 @@ loop:
 		answer = appendIMAuthNotice(answer, notice)
 	}
 
-	finalizeErr := streamer.FinalizeStream(outCtx, msg, streamID, finalDisplay)
+	var finalizeErr error
+	if ss, ok := streamer.(StructuredStreamSender); ok {
+		finalRender := IMStreamRender{Answer: finalDisplay}
+		if parts.Mode == IMStreamModeQuickQA {
+			finalRender.Thinking = formatQARenderThinking(parts.ReasoningInner)
+			finalRender.Tools = FormatIMToolSummary(parts.PipelineToolSteps)
+		} else {
+			finalRender.Thinking = formatAgentRenderThinking(parts.AgentInner)
+			finalRender.Tools = FormatIMToolSummary(parts.AgentToolSteps)
+		}
+		finalizeErr = ss.FinalizeStructuredStream(outCtx, msg, streamID, finalRender)
+	} else {
+		finalizeErr = streamer.FinalizeStream(outCtx, msg, streamID, finalDisplay)
+	}
 	if finalizeErr != nil {
 		logger.Warnf(ctx, "[IM] FinalizeStream failed: %v", finalizeErr)
 	}

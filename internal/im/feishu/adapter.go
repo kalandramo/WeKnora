@@ -903,8 +903,16 @@ func contentDispositionFilename(cd string) string {
 // ──────────────────────────────────────────────────────────────────────
 
 const (
-	// streamingElementID is the element_id used in the card JSON for streaming content.
-	streamingElementID = "streaming_content"
+	// streamThinkingElemID is the collapsible region showing the reasoning / tool
+	// progress. It is folded by default so long reasoning does not stretch the card.
+	streamThinkingElemID = "stream_thinking"
+	// streamToolsElemID is the region showing tool progress / the final tool summary.
+	streamToolsElemID = "stream_tools"
+	// streamAnswerElemID is the region showing the streaming / final answer (top of card).
+	streamAnswerElemID = "stream_answer"
+	// streamingElementID is retained for the legacy single-element UpdateStreamContent
+	// path; on the structured card it maps to the answer region.
+	streamingElementID = streamAnswerElemID
 )
 
 // feishuStreamState tracks per-stream accumulated content.
@@ -913,6 +921,9 @@ type feishuStreamState struct {
 	content    strings.Builder
 	contentSeq int64 // sequence of the last successfully sent content
 	seq        int64 // strictly incrementing sequence for CardKit API
+	// regionContent caches the last content pushed to each structured element so
+	// unchanged regions can skip a CardKit round-trip.
+	regionContent map[string]string
 	// Protected by feishuStreamsMu, independently of content/sequence updates.
 	lastActivityAt time.Time
 	ownerDone      <-chan struct{}
@@ -950,8 +961,10 @@ func cardSummaryPreview(content string) string {
 }
 
 // buildStreamingCardJSON builds a Card JSON 2.0 with streaming_mode enabled.
-// The placeholder text follows the region so Lark users see English rather than
-// the Chinese wording Feishu users expect.
+// The card is split into three regions so the answer stays on top, a collapsible
+// block holds the (potentially long) reasoning, and a dedicated region shows the
+// tool progress / final tool summary. The placeholder text follows the region so
+// Lark users see English rather than the Chinese wording Feishu users expect.
 func buildStreamingCardJSON(region Region) string {
 	card := map[string]interface{}{
 		"schema": "2.0",
@@ -966,10 +979,31 @@ func buildStreamingCardJSON(region Region) string {
 		"body": map[string]interface{}{
 			"elements": []map[string]interface{}{
 				{
+					"tag": "collapsible",
+					"header": map[string]interface{}{
+						"title": map[string]string{"tag": "plain_text", "content": "💭 思考过程"},
+						"folded": true,
+					},
+					"elements": []map[string]interface{}{
+						{
+							"tag":        "markdown",
+							"content":    "💭 " + region.ThinkingText,
+							"text_size":  "normal",
+							"element_id": streamThinkingElemID,
+						},
+					},
+				},
+				{
 					"tag":        "markdown",
-					"content":    "💭 " + region.ThinkingText,
+					"content":    "",
 					"text_size":  "normal",
-					"element_id": streamingElementID,
+					"element_id": streamToolsElemID,
+				},
+				{
+					"tag":        "markdown",
+					"content":    "",
+					"text_size":  "normal",
+					"element_id": streamAnswerElemID,
 				},
 			},
 		},
@@ -1066,6 +1100,87 @@ func (a *Adapter) SendStreamChunk(ctx context.Context, incoming *im.IncomingMess
 	return a.UpdateStreamContent(ctx, incoming, streamID, content)
 }
 
+// UpdateStructuredStream pushes the three regions of an intermediate frame to
+// their own card elements. Thinking and tools update only when non-empty so the
+// placeholder / last content is not cleared between ticks; the answer region is
+// always refreshed.
+func (a *Adapter) UpdateStructuredStream(ctx context.Context, incoming *im.IncomingMessage, streamID string, render im.IMStreamRender) error {
+	accessToken, err := a.getTenantAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get access token: %w", err)
+	}
+	if render.Thinking != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking); err != nil {
+			logger.Warnf(ctx, "[%s] update thinking element failed: %v", a.region.Label, err)
+		}
+	}
+	if render.Tools != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools); err != nil {
+			logger.Warnf(ctx, "[%s] update tools element failed: %v", a.region.Label, err)
+		}
+	}
+	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer); err != nil {
+		logger.Warnf(ctx, "[%s] update answer element failed: %v", a.region.Label, err)
+		return err
+	}
+	return nil
+}
+
+// FinalizeStructuredStream pushes the final frame: the answer region gets the
+// final answer, the tools region shows the final summary, and the thinking
+// region is left collapsed (its content was already delivered during streaming).
+func (a *Adapter) FinalizeStructuredStream(ctx context.Context, incoming *im.IncomingMessage, streamID string, render im.IMStreamRender) error {
+	accessToken, err := a.getTenantAccessToken(ctx)
+	if err != nil {
+		return fmt.Errorf("get access token: %w", err)
+	}
+	if render.Tools != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools); err != nil {
+			logger.Warnf(ctx, "[%s] finalize tools element failed: %v", a.region.Label, err)
+		}
+	}
+	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer); err != nil {
+		logger.Warnf(ctx, "[%s] finalize answer element failed: %v", a.region.Label, err)
+		return err
+	}
+	return nil
+}
+
+// updateStreamElement updates a single card element, skipping the request when
+// the content is unchanged since the last push. The CardKit sequence is shared
+// per card, so a single monotonic counter drives every region update.
+func (a *Adapter) updateStreamElement(ctx context.Context, accessToken, cardID, elementID, content string) error {
+	if content == "" {
+		return nil
+	}
+	state, ok := lookupStream(cardID)
+	if !ok {
+		return fmt.Errorf("unknown stream ID: %s", cardID)
+	}
+	state.mu.Lock()
+	if state.regionContent == nil {
+		state.regionContent = make(map[string]string)
+	}
+	if prev, exists := state.regionContent[elementID]; exists && prev == content {
+		state.mu.Unlock()
+		return nil
+	}
+	seq := state.nextSeq()
+	state.mu.Unlock()
+
+	resolved := a.resolveMarkdownImages(ctx, accessToken, content)
+	if err := a.cardkitUpdateElement(ctx, accessToken, cardID, elementID, resolved, seq); err != nil {
+		return err
+	}
+	state.mu.Lock()
+	if state.regionContent == nil {
+		state.regionContent = make(map[string]string)
+	}
+	state.regionContent[elementID] = content
+	state.mu.Unlock()
+	return nil
+}
+
 // EndStream disables streaming_mode, replaces the temporary summary, and cleans up state.
 func (a *Adapter) EndStream(ctx context.Context, incoming *im.IncomingMessage, streamID string) error {
 	state, ok := lookupStream(streamID)
@@ -1081,7 +1196,14 @@ func (a *Adapter) EndStream(ctx context.Context, incoming *im.IncomingMessage, s
 	var finalSummary *string
 	state.mu.Lock()
 	seq := state.nextSeq()
-	preview := cardSummaryPreview(state.content.String())
+	// The structured path writes the answer into its own card element and never
+	// touches state.content, so the summary must come from the answer region.
+	// The legacy single-element path still fills state.content.
+	source := state.content.String()
+	if answer := state.regionContent[streamAnswerElemID]; answer != "" {
+		source = answer
+	}
+	preview := cardSummaryPreview(source)
 	if preview != "" {
 		finalSummary = &preview
 	}

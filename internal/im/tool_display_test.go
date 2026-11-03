@@ -48,7 +48,7 @@ func TestFormatIMToolLine_grepPatterns(t *testing.T) {
 			"document_count": float64(2),
 		},
 	})
-	if line != "搜索关键词：「文明、策略」 · 找到 5 个匹配片段，来自 2 个文档" {
+	if line != "[完成] 搜索关键词：「文明、策略」 · 找到 5 个匹配片段，来自 2 个文档" {
 		t.Fatalf("grep line = %q", line)
 	}
 }

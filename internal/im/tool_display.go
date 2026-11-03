@@ -8,13 +8,14 @@ import (
 
 // IMToolStep tracks one tool invocation for IM display (mirrors Web agent stream events).
 type IMToolStep struct {
-	ToolCallID string
-	ToolName   string
-	Pending    bool
-	Success    bool
-	Arguments  map[string]any
-	Data       map[string]interface{}
-	Output     string
+	ToolCallID  string
+	ToolName    string
+	Pending     bool
+	Success     bool
+	DurationMs  int64
+	Arguments   map[string]any
+	Data        map[string]interface{}
+	Output      string
 }
 
 // imLocalizedToolName returns zh-CN labels aligned with frontend agentStream.tools.
@@ -248,19 +249,44 @@ func imAppendPatternsTitle(base string, patterns []string) string {
 	return fmt.Sprintf("%s：「%s%s」", base, strings.Join(display, "、"), more)
 }
 
-// FormatIMToolLine formats one agent tool step (no emoji; aligned with Web getToolTitle).
+// FormatIMToolLine formats one agent tool step. A leading text marker shows
+// success/failure once the call has completed, and a trailing duration is
+// appended so users can see how long each tool took (aligned with Web getToolTitle).
 func FormatIMToolLine(step IMToolStep) string {
 	title := imAgentToolTitle(step)
 	if title == "" {
 		return ""
 	}
-	if step.Pending {
-		return title
+	var mark string
+	switch {
+	case step.Pending:
+		// no marker while running
+	case step.Success:
+		mark = "[完成] "
+	default:
+		mark = "[失败] "
 	}
-	if summary := imToolResultSummary(step); summary != "" {
-		return title + " · " + summary
+	line := mark + title
+	if !step.Pending {
+		if summary := imToolResultSummary(step); summary != "" {
+			line += " · " + summary
+		}
+		if d := imToolDurationLabel(step.DurationMs); d != "" {
+			line += " · " + d
+		}
 	}
-	return title
+	return line
+}
+
+// imToolDurationLabel renders a human-friendly duration for an IM tool step.
+func imToolDurationLabel(ms int64) string {
+	if ms <= 0 {
+		return ""
+	}
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.2fs", float64(ms)/1000.0)
 }
 
 // FormatIMRagPipelineLine formats quick-QA RAG pipeline steps (Web RagPipelineProgress).
@@ -770,6 +796,43 @@ func renderIMToolSteps(steps []IMToolStep, format func(IMToolStep) string) strin
 		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// FormatIMToolSummary renders a one-line summary of all visible tool steps for
+// the card's tool region at the end of a run: total count, success/failure, and
+// total duration. Returns "" when there were no visible tool steps.
+func FormatIMToolSummary(steps []IMToolStep) string {
+	visible := make([]IMToolStep, 0, len(steps))
+	for _, s := range steps {
+		if imAgentToolTitle(s) == "" {
+			continue
+		}
+		visible = append(visible, s)
+	}
+	if len(visible) == 0 {
+		return ""
+	}
+	var total, succeeded, totalMs int64
+	for _, s := range visible {
+		total++
+		if s.Success {
+			succeeded++
+		}
+		totalMs += s.DurationMs
+	}
+	failed := total - succeeded
+	var b strings.Builder
+	fmt.Fprintf(&b, "共调用 %d 个工具", total)
+	if failed > 0 {
+		fmt.Fprintf(&b, " · 成功 %d · 失败 %d", succeeded, failed)
+	} else {
+		b.WriteString(" · 全部成功")
+	}
+	if totalMs > 0 {
+		b.WriteString(" · 耗时 ")
+		b.WriteString(imToolDurationLabel(totalMs))
+	}
+	return b.String()
 }
 
 func mergeIMNarrativeAndTools(narrative string, toolLines string) string {

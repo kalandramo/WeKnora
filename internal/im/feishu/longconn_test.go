@@ -268,11 +268,19 @@ func TestConvertEventKeepsAtAllAlongsideSenderType(t *testing.T) {
 				ChatType:    &chatType,
 				MessageType: &messageType,
 				Content:     &content,
+				// A group message is only handled when this bot is explicitly
+				// mentioned, so the fixture has to @-mention it.
+				Mentions: []*larkim.MentionEvent{{
+					Key:           stringPtr("@_user_1"),
+					MentionedType: stringPtr("bot"),
+					Name:          stringPtr("WeKnora"),
+					Id:            &larkim.UserId{OpenId: stringPtr("ou_bot")},
+				}},
 			},
 		},
 	}
 
-	got := convertEvent(RegionFeishu, event)
+	got := convertEvent(RegionFeishu, "ou_bot", event)
 	if got == nil {
 		t.Fatal("convertEvent() returned nil")
 	}

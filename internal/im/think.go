@@ -158,6 +158,55 @@ func FormatIMFinalFromParts(parts IMStreamParts) string {
 	return FormatIMDisplayContent(BuildIMAgentStreamRaw(parts, false), StreamDisplayFinal)
 }
 
+// BuildIMStructuredRender splits stream parts into the three card regions for a
+// StructuredStreamSender. With hideThinking the thinking and tools regions are
+// suppressed and only the answer is returned (quiet-thinking policy).
+func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinking bool) IMStreamRender {
+	_ = agentRunning
+	if hideThinking {
+		answer := strings.TrimSpace(parts.Answer)
+		if answer == "" && parts.Mode == IMStreamModeAgent {
+			answer = strings.TrimSpace(parts.LiveAnswer)
+		}
+		return IMStreamRender{Answer: answer}
+	}
+
+	var thinking, tools, answer string
+	if parts.Mode == IMStreamModeQuickQA {
+		thinking = formatQARenderThinking(parts.ReasoningInner)
+		tools = renderIMToolSteps(parts.PipelineToolSteps, FormatIMRagPipelineLine)
+		answer = strings.TrimSpace(parts.Answer)
+	} else {
+		thinking = formatAgentRenderThinking(parts.AgentInner)
+		tools = renderIMToolSteps(parts.AgentToolSteps, FormatIMToolLine)
+		answer = strings.TrimSpace(parts.LiveAnswer)
+		if a := strings.TrimSpace(parts.Answer); a != "" {
+			answer = a
+		}
+	}
+	return IMStreamRender{
+		Thinking: strings.TrimSpace(thinking),
+		Tools:    strings.TrimSpace(tools),
+		Answer:   answer,
+	}
+}
+
+func formatAgentRenderThinking(inner string) string {
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return ""
+	}
+	return FormatIMDisplayContent(WrapThinkBlock(inner), StreamDisplayIntermediate)
+}
+
+func formatQARenderThinking(reasoning string) string {
+	reasoning = strings.TrimSpace(reasoning)
+	if reasoning == "" {
+		return ""
+	}
+	return TransformThinkBlocks(WrapThinkBlock(reasoning), RAGThinkingStyle)
+}
+
 // FormatIMDisplayContent formats raw stream content for the given display phase.
 func FormatIMDisplayContent(raw string, phase StreamDisplayPhase) string {
 	switch phase {
