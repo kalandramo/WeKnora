@@ -172,6 +172,19 @@ app:
   #   mountPath: /etc/my-config
   #   readOnly: true
 
+  # -- Extra annotations for the app *pod* template metadata (NOT the Deployment
+  # metadata). Rendered verbatim into spec.template.metadata.annotations.
+  # Use this to enable platform-level sidecar injection / auto-discovery, e.g.
+  # DaoCloud DCE (Insight) Prometheus metrics auto-collection:
+  # podAnnotations:
+  #   dce.daocloud.io/metrics-enabled: 'true'
+  #   dce.daocloud.io/metrics-app: aroe-group-control-service
+  #   dce.daocloud.io/metrics-service-name: metrics
+  #   dce.daocloud.io/metrics-path: /metrics        # app exposes /metrics here
+  #   dce.daocloud.io/metrics-port: '9091'           # app exposes metrics on 9091
+  #   dce.daocloud.io/metrics-protocal: http         # note: key is "protocal"
+  podAnnotations: {}
+
 # -----------------------------------------------------------------------------
 # Frontend (Web UI)
 # -----------------------------------------------------------------------------
