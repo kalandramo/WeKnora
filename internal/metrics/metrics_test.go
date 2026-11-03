@@ -19,10 +19,10 @@ func TestMetricsAreExposed(t *testing.T) {
 	// Exercise both collectors so every series has been materialized: gauges
 	// export their current value (even 0), but a CounterVec only exports a
 	// label combination after it has been incremented once.
-	metrics.LLMInflight.Inc()
-	metrics.LLMInflight.Dec()
-	metrics.LLMTotal.WithLabelValues("answer").Inc()
-	metrics.LLMRequestErrors.WithLabelValues("entity_extraction", "403").Inc()
+	metrics.LLMInflight.WithLabelValues("test-model").Inc()
+	metrics.LLMInflight.WithLabelValues("test-model").Dec()
+	metrics.LLMTotal.WithLabelValues("test-model", "answer").Inc()
+	metrics.LLMRequestErrors.WithLabelValues("test-model", "entity_extraction", "403").Inc()
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -41,4 +41,19 @@ func TestMetricsAreExposed(t *testing.T) {
 			t.Errorf("/metrics did not expose %q", name)
 		}
 	}
+	// The model dimension is what lets a multi-model deployment tell which
+	// backend saturated its own quota; a missing label silently degrades every
+	// per-model panel and alert into a global average.
+	if !strings.Contains(body, `model="test-model"`) {
+		t.Errorf("/metrics did not expose the model label; body sample:\n%s", firstLines(body, 20))
+	}
+}
+
+// firstLines returns the first n lines of s, for readable test failure output.
+func firstLines(s string, n int) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > n {
+		lines = lines[:n]
+	}
+	return strings.Join(lines, "\n")
 }
