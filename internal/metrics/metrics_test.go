@@ -21,8 +21,11 @@ func TestMetricsAreExposed(t *testing.T) {
 	// label combination after it has been incremented once.
 	metrics.LLMInflight.WithLabelValues("test-model").Inc()
 	metrics.LLMInflight.WithLabelValues("test-model").Dec()
+	metrics.LLMBackgroundInflight.WithLabelValues("test-model").Inc()
+	metrics.LLMBackgroundInflight.WithLabelValues("test-model").Dec()
 	metrics.LLMTotal.WithLabelValues("test-model", "answer").Inc()
 	metrics.LLMRequestErrors.WithLabelValues("test-model", "entity_extraction", "403").Inc()
+	metrics.SetModelConcurrencyLimit("model-id-1", "test-model", 4)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
@@ -36,6 +39,8 @@ func TestMetricsAreExposed(t *testing.T) {
 		"weknora_llm_requests_inflight",
 		"weknora_llm_requests_total",
 		"weknora_llm_request_errors_total",
+		"weknora_llm_background_requests_inflight",
+		"weknora_llm_model_concurrency_limit",
 	} {
 		if !strings.Contains(body, name) {
 			t.Errorf("/metrics did not expose %q", name)

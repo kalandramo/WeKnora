@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/Tencent/WeKnora/internal/logger"
+	"github.com/Tencent/WeKnora/internal/metrics"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -61,6 +62,16 @@ type trackedSemaphore struct {
 
 // noop is the release returned on the fail-open / passthrough paths.
 func noop() {}
+
+// publishLimit mirrors the effective limit into the metrics registry so
+// dashboards can plot utilisation against the configured cap and alerts can
+// fire on a ratio instead of a hard-coded number. Callers invoke it only when
+// the limit actually changes, keeping the acquire hot path free of label
+// lookups.
+func publishLimit(modelID string, tracked *trackedSemaphore, limit int) {
+	name, _ := tracked.name.Load().(string)
+	metrics.SetModelConcurrencyLimit(modelID, name, limit)
+}
 
 const (
 	// defaultLeaseTTL is the crash-recovery window, not a request timeout.
@@ -122,7 +133,11 @@ func (l *redisLimiter) Acquire(ctx context.Context, key string, limit int) (func
 	zkey := keyPrefix + key
 	entry, _ := l.tracked.LoadOrStore(key, &trackedSemaphore{})
 	tracked := entry.(*trackedSemaphore)
-	tracked.limit.Store(int64(limit))
+	// Swap reports the previous value, so the gauge is refreshed only when an
+	// operator retunes model.max_concurrency (or on the first acquire).
+	if tracked.limit.Swap(int64(limit)) != int64(limit) {
+		publishLimit(key, tracked, limit)
+	}
 	tracked.waiting.Add(1)
 	defer tracked.waiting.Add(-1)
 	token := uuid.NewString()
@@ -193,7 +208,13 @@ func (l *redisLimiter) SetModelName(modelID, name string) {
 		return
 	}
 	entry, _ := l.tracked.LoadOrStore(modelID, &trackedSemaphore{})
-	entry.(*trackedSemaphore).name.Store(name)
+	tracked := entry.(*trackedSemaphore)
+	tracked.name.Store(name)
+	// Re-publish when a name becomes known after the limit was recorded:
+	// publishLimit runs on acquire, which may precede this call.
+	if limit := int(tracked.limit.Load()); limit > 0 {
+		metrics.SetModelConcurrencyLimit(modelID, name, limit)
+	}
 }
 
 // hold starts a heartbeat that refreshes the lease and returns an idempotent

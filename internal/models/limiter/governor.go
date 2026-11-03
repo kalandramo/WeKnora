@@ -5,6 +5,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Tencent/WeKnora/internal/metrics"
 	"github.com/Tencent/WeKnora/internal/types"
 )
 
@@ -134,7 +135,9 @@ func (l *localLimiter) Acquire(ctx context.Context, key string, limit int) (func
 		tracked = &trackedSemaphore{}
 		l.tracked[key] = tracked
 	}
-	tracked.limit.Store(int64(limit))
+	if tracked.limit.Swap(int64(limit)) != int64(limit) {
+		publishLimit(key, tracked, limit)
+	}
 	if !ok {
 		sem = &localSemaphore{limit: limit, changed: make(chan struct{})}
 		l.sems[key] = sem
@@ -201,4 +204,8 @@ func (l *localLimiter) SetModelName(modelID, name string) {
 	}
 	l.mu.Unlock()
 	tracked.name.Store(name)
+	// Re-publish when the name arrives after the limit was recorded.
+	if limit := int(tracked.limit.Load()); limit > 0 {
+		metrics.SetModelConcurrencyLimit(modelID, name, limit)
+	}
 }
