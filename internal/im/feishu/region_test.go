@@ -149,6 +149,7 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 					Tag       string `json:"tag"`
 					Content   string `json:"content"`
 					ElementID string `json:"element_id"`
+					TextSize  string `json:"text_size"`
 					Expanded  *bool  `json:"expanded"`
 					Header    struct {
 						Title struct {
@@ -222,9 +223,17 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 		if summary.Tag != "markdown" {
 			t.Errorf("%s summary tag = %q, want markdown", region.Label, summary.Tag)
 		}
+		// Auxiliary text (12px): at body size the summary read as the opening
+		// paragraph of the answer rather than as metadata about the run.
+		if summary.TextSize != "notation" {
+			t.Errorf("%s summary text_size = %q, want notation", region.Label, summary.TextSize)
+		}
 		answer := card.Body.Elements[2]
 		if answer.ElementID != streamAnswerElemID {
 			t.Errorf("%s answer element_id = %q, want %q", region.Label, answer.ElementID, streamAnswerElemID)
+		}
+		if answer.TextSize != "normal" {
+			t.Errorf("%s answer text_size = %q, want normal", region.Label, answer.TextSize)
 		}
 		if streamingElementID != streamAnswerElemID {
 			t.Errorf("streamingElementID = %q, want %q", streamingElementID, streamAnswerElemID)

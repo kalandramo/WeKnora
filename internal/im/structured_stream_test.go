@@ -7,9 +7,9 @@ import (
 
 func TestBuildIMStructuredRenderAgent(t *testing.T) {
 	parts := IMStreamParts{
-		Mode:           IMStreamModeAgent,
-		AgentInner:     "先检索知识库再总结",
-		AgentToolSteps: []IMToolStep{{Thought: "先检索知识库再总结", ToolName: "web_search", Success: true, DurationMs: 1500}},
+		Mode:            IMStreamModeAgent,
+		AgentInner:      "先检索知识库再总结",
+		AgentToolSteps:  []IMToolStep{{Thought: "先检索知识库再总结", ToolName: "web_search", Success: true, DurationMs: 1500}},
 		TrailingThought: "检索到了三条记录",
 		LiveAnswer:      "这是最终回答",
 		ElapsedMs:       153000,
@@ -18,7 +18,7 @@ func TestBuildIMStructuredRenderAgent(t *testing.T) {
 	// The folded region is one interleaved timeline: the reasoning round, then the
 	// call it led to, then the trailing reasoning. Two separated blocks would lose
 	// the causal order the Web timeline shows.
-	if !strings.Contains(r.Thinking, "💡 先检索知识库再总结") {
+	if !strings.Contains(r.Thinking, "💡 思考 · 先检索知识库再总结") {
 		t.Fatalf("timeline should open with the reasoning round, got %q", r.Thinking)
 	}
 	if !strings.Contains(r.Thinking, "🛠 ") {
@@ -27,7 +27,7 @@ func TestBuildIMStructuredRenderAgent(t *testing.T) {
 	if strings.Index(r.Thinking, "💡") > strings.Index(r.Thinking, "🛠") {
 		t.Fatalf("tool row must follow the reasoning that led to it, got %q", r.Thinking)
 	}
-	if !strings.Contains(r.Thinking, "💡 检索到了三条记录") {
+	if !strings.Contains(r.Thinking, "💡 思考 · 检索到了三条记录") {
 		t.Fatalf("timeline must end with the trailing reasoning, got %q", r.Thinking)
 	}
 	// Length is not a concern inside the folded block, but the blockquote markers of
@@ -128,5 +128,82 @@ func TestIMThinkingRounds(t *testing.T) {
 	}
 	if got := IMThinkingRounds(nil, "  "); got != 0 {
 		t.Fatalf("blank trailing reasoning must not count, got %d", got)
+	}
+}
+
+// The folded panel is read, not parsed: every row must stay on one line. The
+// previous renderer dumped the reasoning body verbatim, paragraph breaks and
+// markdown markers included, which is what made the block look like a raw
+// transcript instead of the compact timeline the Web client shows.
+func TestRenderIMAgentTimelineRows(t *testing.T) {
+	longThought := "This is a documentation-type question — how to apply for permission to view OC logs on the Daoke platform. " +
+		"Let me search the knowledge base for the permission application process.\n\n" +
+		"**Note**: the answer must stay concise."
+	steps := []IMToolStep{{
+		Thought:    longThought,
+		ToolName:   "knowledge_search",
+		Success:    true,
+		DurationMs: 1140,
+		Arguments:  map[string]any{"query": "如何申请开通查看日志的权限，道客平台日志查看权限申请流程和表单填写"},
+	}}
+	got := renderIMAgentTimeline(steps, "")
+
+	if strings.Contains(got, "\n\n") {
+		t.Fatalf("rows must not be separated by blank lines, got %q", got)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want 2 rows (reasoning + tool), got %d: %q", len(lines), got)
+	}
+
+	thought := strings.TrimPrefix(lines[0], "💡 思考 · ")
+	if thought == lines[0] {
+		t.Fatalf("first row must be the labelled reasoning row, got %q", lines[0])
+	}
+	if !strings.HasSuffix(thought, "…") {
+		t.Fatalf("over-long reasoning must end with an ellipsis, got %q", thought)
+	}
+	if n := len([]rune(strings.TrimSuffix(thought, "…"))); n > imTimelineThoughtLimit {
+		t.Fatalf("thought snippet is %d runes, want <= %d", n, imTimelineThoughtLimit)
+	}
+	if strings.Contains(lines[0], "**") || strings.Contains(lines[0], "Note") {
+		t.Fatalf("markdown markers must be stripped and the tail dropped, got %q", lines[0])
+	}
+
+	if !strings.HasPrefix(lines[1], "🛠 ") {
+		t.Fatalf("second row must be the tool row, got %q", lines[1])
+	}
+	if n := len([]rune(lines[1])); n > 80 {
+		t.Fatalf("tool row is %d runes, too wide for one card line: %q", n, lines[1])
+	}
+}
+
+// MaxIterations allows 40 iterations; two rows each would overflow a card.
+func TestRenderIMAgentTimelineCapsRows(t *testing.T) {
+	steps := make([]IMToolStep, 0, 40)
+	for i := 0; i < 40; i++ {
+		steps = append(steps, IMToolStep{Thought: "round", ToolName: "web_search", Success: true})
+	}
+	lines := strings.Split(renderIMAgentTimeline(steps, ""), "\n")
+	if len(lines) != imTimelineMaxRows+1 {
+		t.Fatalf("want %d rows incl. the omission note, got %d", imTimelineMaxRows+1, len(lines))
+	}
+	if !strings.HasPrefix(lines[0], "… 前面 ") {
+		t.Fatalf("first line must report how many rows were dropped, got %q", lines[0])
+	}
+}
+
+// A run that used neither tools nor reasoning still created the panel at card
+// creation with a "正在思考..." placeholder, and region updates skip empty content
+// — so without a quiet replacement the folded block kept advertising work that
+// had already finished.
+func TestBuildIMStructuredRenderEmptyDetail(t *testing.T) {
+	agent := BuildIMStructuredRender(IMStreamParts{Mode: IMStreamModeAgent, Answer: "直接回答"}, true, false)
+	if agent.Thinking != imEmptyDetailAgent {
+		t.Fatalf("agent empty detail = %q, want %q", agent.Thinking, imEmptyDetailAgent)
+	}
+	qa := BuildIMStructuredRender(IMStreamParts{Mode: IMStreamModeQuickQA, Answer: "直接回答"}, false, false)
+	if qa.Thinking != imEmptyDetailQuickQA {
+		t.Fatalf("quick-QA empty detail = %q, want %q", qa.Thinking, imEmptyDetailQuickQA)
 	}
 }
