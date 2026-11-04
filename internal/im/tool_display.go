@@ -237,7 +237,9 @@ func imAppendQueryTitle(base, query string) string {
 	if query == "" {
 		return base
 	}
-	return fmt.Sprintf("%s：「%s」", base, query)
+	// The query is context, not the payload: cap it so the row stays one line and
+	// the result count / duration that follow it remain visible.
+	return fmt.Sprintf("%s：「%s」", base, imTruncateRunes(query, imTimelineQueryLimit))
 }
 
 func imAppendPatternsTitle(base string, patterns []string) string {
@@ -871,30 +873,96 @@ func IMThinkingRounds(steps []IMToolStep, trailing string) int {
 	return rounds
 }
 
-// renderIMAgentTimeline interleaves reasoning rounds with the tool lines that
+const (
+	// imTimelineThoughtLimit is how much of one reasoning round the timeline
+	// keeps. The Web client shows the same 50-character snippet in its collapsed
+	// row and reveals the rest through a per-row expander; a card markdown region
+	// has no such expander, so the snippet is all the reader ever gets. Keeping it
+	// short is what makes the folded panel readable — a full reasoning dump is the
+	// model talking to itself, usually in English, several screens long.
+	imTimelineThoughtLimit = 50
+	// imTimelineQueryLimit bounds the search phrase quoted in a tool row. The raw
+	// query is often a full sentence, which pushes the result count and duration
+	// off the row.
+	imTimelineQueryLimit = 24
+	// imTimelineMaxRows bounds the panel for long runs. MaxIterations is 40, so a
+	// renderer that keeps every row would produce an 80-line wall in one card.
+	imTimelineMaxRows = 24
+)
+
+// imTruncateRunes cuts s to at most n runes, appending an ellipsis when it had
+// to shorten. Runes, not bytes: reasoning text is usually Chinese.
+func imTruncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return strings.TrimSpace(string(r[:n])) + "…"
+}
+
+// imThoughtSnippet folds one reasoning round into a single timeline row: markdown
+// markers stripped, soft-wrapped lines joined, then truncated. Without this the
+// row kept the model's paragraph breaks and markdown emphasis, which the card
+// renders literally and which is what made the panel look like a raw transcript.
+func imThoughtSnippet(text string) string {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return ""
+	}
+	// Emphasis, inline code and heading markers would otherwise render as literal
+	// characters in the card; the row is plain prose.
+	text = strings.NewReplacer("**", "", "__", "", "`", "", "*", "").Replace(text)
+	lines := make([]string, 0, 8)
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(strings.TrimLeft(line, "#>-"))
+		if line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return imTruncateRunes(strings.Join(lines, " "), imTimelineThoughtLimit)
+}
+
+// renderIMAgentTimeline interleaves reasoning rounds with the tool rows that
 // followed them, mirroring the Web client's execution timeline. A single merged
 // block is used because a card markdown region has no per-row widgets: the 💡
 // and 🛠 markers carry the "reasoning vs action" distinction the Web icons do.
+//
+// Rows are one line each and joined with a single newline, which the card renders
+// as a line break. Blank-line separation (the previous format) turned every gap
+// into a paragraph break and, combined with full reasoning bodies, produced the
+// ragged block that read as "messy".
 func renderIMAgentTimeline(steps []IMToolStep, trailing string) string {
-	var b strings.Builder
-	appendBlock := func(marker, text string) {
+	rows := make([]string, 0, len(steps)*2+1)
+	appendRow := func(marker, text string) {
 		text = strings.TrimSpace(text)
 		if text == "" {
 			return
 		}
-		if b.Len() > 0 {
-			b.WriteString("\n\n")
-		}
-		b.WriteString(marker)
-		b.WriteString(text)
+		rows = append(rows, marker+text)
 	}
 	for _, step := range steps {
-		appendBlock("💡 ", step.Thought)
+		if snippet := imThoughtSnippet(step.Thought); snippet != "" {
+			appendRow("💡 思考 · ", snippet)
+		}
 		if line := FormatIMToolLine(step); line != "" {
-			appendBlock("🛠 ", line)
+			appendRow("🛠 ", line)
 		}
 	}
-	appendBlock("💡 ", trailing)
+	if snippet := imThoughtSnippet(trailing); snippet != "" {
+		appendRow("💡 思考 · ", snippet)
+	}
+
+	omitted := 0
+	if len(rows) > imTimelineMaxRows {
+		omitted = len(rows) - imTimelineMaxRows
+		rows = rows[omitted:]
+	}
+
+	var b strings.Builder
+	if omitted > 0 {
+		fmt.Fprintf(&b, "… 前面 %d 行已省略\n", omitted)
+	}
+	b.WriteString(strings.Join(rows, "\n"))
 	return strings.TrimSpace(b.String())
 }
 

@@ -1047,9 +1047,12 @@ func buildStreamingCardJSON(region Region) string {
 					},
 				},
 				{
+					// notation (12px), not normal: the summary is metadata ("思考 N
+					// 轮 · 调用 M 次工具 · 耗时 X") pinned under the folded panel,
+					// and at body size it read as the first paragraph of the answer.
 					"tag":        "markdown",
 					"content":    "",
-					"text_size":  "normal",
+					"text_size":  "notation",
 					"element_id": streamSummaryElemID,
 				},
 				{

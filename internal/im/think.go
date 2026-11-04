@@ -166,6 +166,15 @@ func FormatIMFinalFromParts(parts IMStreamParts) string {
 	return FormatIMDisplayContent(BuildIMAgentStreamRaw(parts, false), StreamDisplayFinal)
 }
 
+const (
+	// imEmptyDetailAgent and imEmptyDetailQuickQA stand in for the create-time
+	// "正在思考..." placeholder when a run yields no timeline row and no reasoning
+	// block. Region updates skip empty content, so without this the folded panel
+	// would keep advertising work that had already finished.
+	imEmptyDetailAgent   = "本轮未调用工具"
+	imEmptyDetailQuickQA = "本轮未返回思考过程"
+)
+
 // BuildIMStructuredRender splits stream parts into the card regions for a
 // StructuredStreamSender: a folded block holding reasoning and tool detail, a
 // one-line tool summary kept outside that block (a folded block hides its
@@ -185,6 +194,9 @@ func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinkin
 	var thinking, tools, summary, answer string
 	if parts.Mode == IMStreamModeQuickQA {
 		thinking = formatQARenderThinking(parts.ReasoningInner)
+		if thinking == "" {
+			thinking = imEmptyDetailQuickQA
+		}
 		tools = renderIMToolSteps(parts.PipelineToolSteps, FormatIMRagPipelineLine)
 		// Quick QA has no agent loop: its rows are pipeline stages, so there are
 		// no reasoning rounds to report and only the stage count is meaningful.
@@ -195,6 +207,9 @@ func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinkin
 		// led to, the next reasoning …), matching the Web client instead of two
 		// separated blocks that lose the causal order.
 		thinking = renderIMAgentTimeline(parts.AgentToolSteps, parts.TrailingThought)
+		if thinking == "" {
+			thinking = imEmptyDetailAgent
+		}
 		tools = renderIMToolSteps(parts.AgentToolSteps, FormatIMToolLine)
 		summary = FormatIMExecutionSummary(
 			IMThinkingRounds(parts.AgentToolSteps, parts.TrailingThought),
