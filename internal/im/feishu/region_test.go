@@ -173,10 +173,10 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 		if card.Config.Summary.Content != region.ThinkingText {
 			t.Errorf("%s summary = %q, want %q", region.Label, card.Config.Summary.Content, region.ThinkingText)
 		}
-		// The card is split into three regions: a collapsible thinking block
-		// (folded by default), a tool region, and the answer region on top.
+		// The card is laid out as a folded block (reasoning + per-call tool log), a
+		// summary that stays visible while the block is folded, and the answer.
 		if len(card.Body.Elements) != 3 {
-			t.Fatalf("%s card has %d elements, want 3", region.Label, len(card.Body.Elements))
+			t.Fatalf("%s card has %d elements, want 3 (folded block, summary, answer)", region.Label, len(card.Body.Elements))
 		}
 
 		thinking := card.Body.Elements[0]
@@ -196,21 +196,31 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 			t.Errorf("%s thinking region uses the non-existent header.folded field", region.Label)
 		}
 		if thinking.Header.Title.Content != streamThinkingPanelTitle {
-			t.Errorf("%s thinking panel title = %q, want %q", region.Label, thinking.Header.Title.Content, streamThinkingPanelTitle)
+			t.Errorf("%s folding panel title = %q, want %q", region.Label, thinking.Header.Title.Content, streamThinkingPanelTitle)
 		}
+		// One element carries the whole interleaved timeline: reasoning rounds and
+		// the tool calls they led to. Splitting them into two elements would break
+		// the causal order the timeline exists to show.
 		if len(thinking.Elements) != 1 {
-			t.Fatalf("%s thinking region has %d nested elements, want 1", region.Label, len(thinking.Elements))
+			t.Fatalf("%s folding panel has %d nested elements, want 1 (the timeline)", region.Label, len(thinking.Elements))
 		}
 		if thinking.Elements[0].ElementID != streamThinkingElemID {
-			t.Errorf("%s thinking element_id = %q, want %q", region.Label, thinking.Elements[0].ElementID, streamThinkingElemID)
+			t.Errorf("%s timeline element_id = %q, want %q", region.Label, thinking.Elements[0].ElementID, streamThinkingElemID)
 		}
 		if !strings.Contains(thinking.Elements[0].Content, region.ThinkingText) {
 			t.Errorf("%s thinking content %q does not contain %q", region.Label, thinking.Elements[0].Content, region.ThinkingText)
 		}
 
-		tools := card.Body.Elements[1]
-		if tools.ElementID != streamToolsElemID {
-			t.Errorf("%s tools element_id = %q, want %q", region.Label, tools.ElementID, streamToolsElemID)
+		// The summary must be a sibling of the folded panel, never a child: a
+		// collapsed collapsible_panel renders none of its children, so a summary
+		// placed inside would be invisible exactly while the block is folded.
+		summary := card.Body.Elements[1]
+		if summary.ElementID != streamSummaryElemID {
+			t.Errorf("%s summary element_id = %q, want %q (outside the folded panel)",
+				region.Label, summary.ElementID, streamSummaryElemID)
+		}
+		if summary.Tag != "markdown" {
+			t.Errorf("%s summary tag = %q, want markdown", region.Label, summary.Tag)
 		}
 		answer := card.Body.Elements[2]
 		if answer.ElementID != streamAnswerElemID {
@@ -269,7 +279,7 @@ func TestBuildStreamingCardJSON_ElementIDsAreValid(t *testing.T) {
 		seen := make(map[string]bool)
 		walk(t, region.Label, card, seen)
 		if len(seen) != 4 {
-			t.Errorf("%s card declares %d element_ids, want 4 (panel + 3 regions)", region.Label, len(seen))
+			t.Errorf("%s card declares %d element_ids, want 4 (panel + timeline + summary + answer)", region.Label, len(seen))
 		}
 	}
 }

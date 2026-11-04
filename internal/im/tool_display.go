@@ -8,14 +8,18 @@ import (
 
 // IMToolStep tracks one tool invocation for IM display (mirrors Web agent stream events).
 type IMToolStep struct {
-	ToolCallID  string
-	ToolName    string
-	Pending     bool
-	Success     bool
-	DurationMs  int64
-	Arguments   map[string]any
-	Data        map[string]interface{}
-	Output      string
+	ToolCallID string
+	ToolName   string
+	Pending    bool
+	Success    bool
+	DurationMs int64
+	Arguments  map[string]any
+	Data       map[string]interface{}
+	Output     string
+	// Thought is the reasoning round that immediately preceded this call. Replaying
+	// it in front of the tool line lets the folded region read as the interleaved
+	// timeline the Web client shows, instead of "all reasoning, then all tools".
+	Thought string
 }
 
 // imLocalizedToolName returns zh-CN labels aligned with frontend agentStream.tools.
@@ -798,10 +802,9 @@ func renderIMToolSteps(steps []IMToolStep, format func(IMToolStep) string) strin
 	return strings.TrimRight(b.String(), "\n")
 }
 
-// FormatIMToolSummary renders a one-line summary of all visible tool steps for
-// the card's tool region at the end of a run: total count, success/failure, and
-// total duration. Returns "" when there were no visible tool steps.
-func FormatIMToolSummary(steps []IMToolStep) string {
+// visibleIMToolSteps returns the steps that produce a user-facing line, applied
+// consistently so the count in the summary matches the rows in the detail.
+func visibleIMToolSteps(steps []IMToolStep) []IMToolStep {
 	visible := make([]IMToolStep, 0, len(steps))
 	for _, s := range steps {
 		if imAgentToolTitle(s) == "" {
@@ -809,30 +812,90 @@ func FormatIMToolSummary(steps []IMToolStep) string {
 		}
 		visible = append(visible, s)
 	}
-	if len(visible) == 0 {
+	return visible
+}
+
+// FormatIMDuration renders a wall-clock duration the way the Web client does:
+// "820ms", "45s", "2m 33s". Tool rows keep their own two-decimal label, because
+// a single tool is measured in seconds while a whole run is measured in minutes.
+func FormatIMDuration(ms int64) string {
+	if ms <= 0 {
 		return ""
 	}
-	var total, succeeded, totalMs int64
-	for _, s := range visible {
-		total++
-		if s.Success {
-			succeeded++
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	seconds := ms / 1000
+	if seconds < 60 {
+		return fmt.Sprintf("%ds", seconds)
+	}
+	return fmt.Sprintf("%dm %ds", seconds/60, seconds%60)
+}
+
+// FormatIMExecutionSummary renders the header of the folded execution block,
+// matching the Web client: "思考 8 轮 · 调用 10 次工具 · 耗时 2m 33s".
+//
+// rounds counts reasoning rounds (one segment per tool call), not thinking
+// chunks, and toolCalls counts invocations rather than distinct tools — both
+// match what the Web timeline header reports.
+//
+// elapsedMs must be wall-clock. Summing the per-call durations under-reports a
+// multi-round run badly: model latency between calls and the final answer
+// generation are the larger part of the turn, and they belong to no single tool.
+func FormatIMExecutionSummary(rounds, toolCalls int, elapsedMs int64) string {
+	parts := make([]string, 0, 3)
+	if rounds > 0 {
+		parts = append(parts, fmt.Sprintf("思考 %d 轮", rounds))
+	}
+	if toolCalls > 0 {
+		parts = append(parts, fmt.Sprintf("调用 %d 次工具", toolCalls))
+	}
+	if d := FormatIMDuration(elapsedMs); d != "" {
+		parts = append(parts, "耗时 "+d)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// IMThinkingRounds counts reasoning rounds for a step list that records the
+// reasoning preceding each call plus the trailing (answer-producing) segment.
+func IMThinkingRounds(steps []IMToolStep, trailing string) int {
+	rounds := 0
+	for _, s := range steps {
+		if strings.TrimSpace(s.Thought) != "" {
+			rounds++
 		}
-		totalMs += s.DurationMs
 	}
-	failed := total - succeeded
+	if strings.TrimSpace(trailing) != "" {
+		rounds++
+	}
+	return rounds
+}
+
+// renderIMAgentTimeline interleaves reasoning rounds with the tool lines that
+// followed them, mirroring the Web client's execution timeline. A single merged
+// block is used because a card markdown region has no per-row widgets: the 💡
+// and 🛠 markers carry the "reasoning vs action" distinction the Web icons do.
+func renderIMAgentTimeline(steps []IMToolStep, trailing string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "共调用 %d 个工具", total)
-	if failed > 0 {
-		fmt.Fprintf(&b, " · 成功 %d · 失败 %d", succeeded, failed)
-	} else {
-		b.WriteString(" · 全部成功")
+	appendBlock := func(marker, text string) {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		b.WriteString(marker)
+		b.WriteString(text)
 	}
-	if totalMs > 0 {
-		b.WriteString(" · 耗时 ")
-		b.WriteString(imToolDurationLabel(totalMs))
+	for _, step := range steps {
+		appendBlock("💡 ", step.Thought)
+		if line := FormatIMToolLine(step); line != "" {
+			appendBlock("🛠 ", line)
+		}
 	}
-	return b.String()
+	appendBlock("💡 ", trailing)
+	return strings.TrimSpace(b.String())
 }
 
 func mergeIMNarrativeAndTools(narrative string, toolLines string) string {

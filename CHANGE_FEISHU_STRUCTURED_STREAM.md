@@ -185,3 +185,67 @@
 1. `collapsible_panel` 需要飞书客户端 **V7.9+**，低版本客户端会显示"请升级客户端查看内容"的占位图（按用户决定暂不处理）。
 2. `flush()` 结构化分支绕过了 `holdbackCutoff`，答案区可能短暂出现未闭合的链接/图片标记。
 3. 思考区内容参与单卡 30KB 体积上限，长推理需截断或摘要。
+
+---
+
+## 九、对齐 Web 端执行时间线（2026-11-04）
+
+### 目标
+
+飞书卡片的折叠区与摘要行，对齐 Web 端 `AgentStreamDisplay.vue` 的呈现：
+
+```
+💭 执行详情                                    ⌄
+思考 8 轮 · 调用 10 次工具 · 耗时 2m 33s
+─────────────────────────────────────────
+（展开后）按发生顺序交错的思考与工具调用
+```
+
+### 三项口径对齐
+
+| 项 | 旧实现 | 新实现（对齐 Web） |
+| --- | --- | --- |
+| 摘要文案 | `共调用 N 个工具 · 全部成功 · 耗时 2.50s` | `思考 R 轮 · 调用 N 次工具 · 耗时 2m 33s` |
+| 思考轮数 | 无 | 每个工具调用前的思考段算一轮，尾部收尾思考再加一轮（与 Web 合并连续 thinking 事件的口径一致） |
+| 耗时 | 各工具 `DurationMs` 求和 | 墙钟 `total_duration_ms`（完成事件下发）；流式期间用 `time.Since(streamStart)` 实时走字 |
+
+**耗时口径是这次的关键修正**：工具耗时之和只覆盖工具自身执行时间，漏掉了模型思考、工具之间的调度间隙与最终答案生成——多轮 agent 单轮里这部分往往是主要耗时。`FormatIMExecutionSummary(rounds, toolCalls, elapsedMs)` 的 `elapsedMs` 语义明确为墙钟。
+
+`FormatIMDuration` 与前端 `formatDuration` 完全一致：`820ms` / `45s` / `2m 33s`（整数秒，无小数）。
+
+### 时间线交错
+
+`IMToolStep` 新增 `Thought` 字段：记录该次调用**之前**刚结束的那轮思考。`IMStreamParts` 新增 `TrailingThought`（最后一次工具调用之后的收尾思考）。
+
+渲染由 `renderIMAgentTimeline` 完成，按 `思考 → 工具 → 思考 → 工具 → 尾部思考` 输出：
+
+```
+💡 这是一个按网段批量盘点资产 owner 的需求…
+🛠 [完成] Cmdb Asset Search · 命中 3 条 · 1.20s
+💡 该网段在 CMDB 缓存中未命中，我核对下 ip 字段…
+🛠 [完成] Cmdb Asset Fields · 2.05s
+```
+
+卡片 markdown 区没有逐行图标能力，用 💡 / 🛠 两个 emoji 承载 Web 端「思考 vs 动作」的区分。
+
+### 卡片结构收敛
+
+时间线合一后，`stream_tools` 元素被移除（工具行已在时间线内，再单独占一区就是同一批行的两份拷贝）：
+
+| 元素 | 位置 | 内容 |
+| --- | --- | --- |
+| `stream_think_panel` | 顶层 | `collapsible_panel`，`expanded: false`，标题「💭 执行详情」 |
+| `stream_thinking` | 面板内 | 交错时间线 |
+| `stream_summary` | 顶层 | 一行摘要（折叠态唯一可见的过程信息） |
+| `stream_answer` | 顶层 | 答案 |
+
+推送顺序改为 **答案优先 → 摘要 → 时间线（受节流）**：卡的每秒预算用尽时，被牺牲的是折叠区而不是答案。
+
+### 验证
+
+```
+go vet ./internal/im/...                        ✅
+go test ./internal/im/ ./internal/im/feishu/    ✅ ok / ok
+```
+
+新增/改写断言：时间线的交错顺序（思考在前、工具紧随、尾部思考收尾）、摘要文案逐字匹配 Web 头、`FormatIMDuration` 六档边界、`IMThinkingRounds` 的零值与空白处理、摘要区不受折叠节流影响。

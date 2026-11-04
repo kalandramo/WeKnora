@@ -61,8 +61,16 @@ type IMStreamParts struct {
 	AgentInner     string       // retracted preambles + thoughts ("思考过程")
 	AgentToolSteps []IMToolStep // tool progress lines (one row per tool_call_id)
 	LiveAnswer     string       // optimistic answer stream before tools retract it
+	// TrailingThought is the reasoning of the last round, which follows the final
+	// tool call instead of preceding one. Without it the timeline would end on a
+	// tool line and lose the wrap-up reasoning.
+	TrailingThought string
 
 	Answer string // final answer (complete / knowledge QA)
+
+	// ElapsedMs is wall-clock time for the turn, used by the folded block header.
+	// Zero means "not finished yet"; callers pass the running elapsed time.
+	ElapsedMs int64
 }
 
 func agentThinkContent(parts IMStreamParts) string {
@@ -158,9 +166,12 @@ func FormatIMFinalFromParts(parts IMStreamParts) string {
 	return FormatIMDisplayContent(BuildIMAgentStreamRaw(parts, false), StreamDisplayFinal)
 }
 
-// BuildIMStructuredRender splits stream parts into the three card regions for a
-// StructuredStreamSender. With hideThinking the thinking and tools regions are
-// suppressed and only the answer is returned (quiet-thinking policy).
+// BuildIMStructuredRender splits stream parts into the card regions for a
+// StructuredStreamSender: a folded block holding reasoning and tool detail, a
+// one-line tool summary kept outside that block (a folded block hides its
+// children, so the summary must not live inside it), and the answer. With
+// hideThinking the reasoning, detail and summary regions are all suppressed and
+// only the answer is returned (quiet-thinking policy).
 func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinking bool) IMStreamRender {
 	_ = agentRunning
 	if hideThinking {
@@ -171,14 +182,25 @@ func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinkin
 		return IMStreamRender{Answer: answer}
 	}
 
-	var thinking, tools, answer string
+	var thinking, tools, summary, answer string
 	if parts.Mode == IMStreamModeQuickQA {
 		thinking = formatQARenderThinking(parts.ReasoningInner)
 		tools = renderIMToolSteps(parts.PipelineToolSteps, FormatIMRagPipelineLine)
+		// Quick QA has no agent loop: its rows are pipeline stages, so there are
+		// no reasoning rounds to report and only the stage count is meaningful.
+		summary = FormatIMExecutionSummary(0, len(visibleIMToolSteps(parts.PipelineToolSteps)), parts.ElapsedMs)
 		answer = strings.TrimSpace(parts.Answer)
 	} else {
-		thinking = formatAgentRenderThinking(parts.AgentInner)
+		// The folded region is one interleaved timeline (reasoning, the tool call it
+		// led to, the next reasoning …), matching the Web client instead of two
+		// separated blocks that lose the causal order.
+		thinking = renderIMAgentTimeline(parts.AgentToolSteps, parts.TrailingThought)
 		tools = renderIMToolSteps(parts.AgentToolSteps, FormatIMToolLine)
+		summary = FormatIMExecutionSummary(
+			IMThinkingRounds(parts.AgentToolSteps, parts.TrailingThought),
+			len(visibleIMToolSteps(parts.AgentToolSteps)),
+			parts.ElapsedMs,
+		)
 		answer = strings.TrimSpace(parts.LiveAnswer)
 		if a := strings.TrimSpace(parts.Answer); a != "" {
 			answer = a
@@ -187,16 +209,9 @@ func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinkin
 	return IMStreamRender{
 		Thinking: strings.TrimSpace(thinking),
 		Tools:    strings.TrimSpace(tools),
+		Summary:  strings.TrimSpace(summary),
 		Answer:   answer,
 	}
-}
-
-func formatAgentRenderThinking(inner string) string {
-	inner = strings.TrimSpace(inner)
-	if inner == "" {
-		return ""
-	}
-	return TransformThinkBlocks(WrapThinkBlock(inner), CollapsibleThinkStyle)
 }
 
 func formatQARenderThinking(reasoning string) string {
@@ -207,10 +222,13 @@ func formatQARenderThinking(reasoning string) string {
 	return TransformThinkBlocks(WrapThinkBlock(reasoning), CollapsibleThinkStyle)
 }
 
-// CollapsibleThinkStyle renders reasoning for a card region that already carries
-// its own "思考过程" title (the Feishu collapsible header). Blockquote markers and
-// a duplicate "**思考过程**" header are dropped, so the region reads as plain
-// paragraphs instead of a quote nested in a titled panel.
+// CollapsibleThinkStyle renders quick-QA reasoning for a card region that
+// already carries its own title (the Feishu collapsible header). Blockquote
+// markers and a duplicate "**思考过程**" header are dropped, so the region reads
+// as plain paragraphs instead of a quote nested in a titled panel.
+//
+// The agent path does not use it: its folded region is an interleaved timeline
+// (see renderIMAgentTimeline), where reasoning rounds and tool rows alternate.
 var CollapsibleThinkStyle = ThinkBlockStyle{
 	ThinkingHeader: "💭 正在思考...",
 	ThoughtHeader:  "",

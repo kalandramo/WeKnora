@@ -910,15 +910,19 @@ const (
 	// rejects an element_id longer than 20 characters (300301, code 1002), so the
 	// name is trimmed: "stream_thinking_panel" is 21 and fails card creation.
 	streamThinkingPanelID = "stream_think_panel"
-	// streamThinkingPanelTitle is the collapsible header text.
-	streamThinkingPanelTitle = "💭 思考过程"
+	// streamThinkingPanelTitle is the collapsible header text. The block holds
+	// both the reasoning and the per-call tool log, so the title covers both.
+	streamThinkingPanelTitle = "💭 执行详情"
 	// streamThinkingElemID is the markdown element inside the collapsible that
-	// receives the reasoning / tool progress. The panel is folded by default so
-	// long reasoning does not stretch the card.
+	// receives the interleaved execution timeline (reasoning rounds and the tool
+	// calls they led to). The panel is folded by default so a long timeline does
+	// not stretch the card.
 	streamThinkingElemID = "stream_thinking"
-	// streamToolsElemID is the region showing tool progress / the final tool summary.
-	streamToolsElemID = "stream_tools"
-	// streamAnswerElemID is the region showing the streaming / final answer (top of card).
+	// streamSummaryElemID is the one-line summary. It must stay outside the
+	// folded panel, because a collapsed collapsible_panel renders none of its
+	// children — a summary inside would be invisible exactly when it matters.
+	streamSummaryElemID = "stream_summary"
+	// streamAnswerElemID is the region showing the streaming / final answer.
 	streamAnswerElemID = "stream_answer"
 	// streamingElementID is retained for the legacy single-element UpdateStreamContent
 	// path; on the structured card it maps to the answer region.
@@ -936,11 +940,13 @@ type streamRegionThrottle struct {
 	minInterval time.Duration
 }
 
-// thinkingRegionThrottle throttles the folded reasoning region only. It is the
-// highest-frequency region (full text re-sent on every tick) and the least
-// time-critical one, so it is repainted once it grew by 200 runes or one second
-// passed. The answer and tool regions stay immediate.
-var thinkingRegionThrottle = streamRegionThrottle{
+// foldedRegionThrottle throttles the regions inside the folded panel. They are
+// the highest-frequency regions (full text re-sent every tick) and the least
+// time-critical, since a folded panel is not being read: each is repainted once
+// it grew by 200 runes or one second passed. The answer and summary regions stay
+// immediate — the answer is what the reader is watching, and the summary is
+// short and changes only when a tool starts or finishes.
+var foldedRegionThrottle = streamRegionThrottle{
 	minGrowth:   200,
 	minInterval: time.Second,
 }
@@ -994,9 +1000,11 @@ func cardSummaryPreview(content string) string {
 }
 
 // buildStreamingCardJSON builds a Card JSON 2.0 with streaming_mode enabled.
-// The card is split into three regions: a collapsible block (folded by default)
-// holds the potentially long reasoning, a second region shows the tool progress
-// and the final tool summary, and the answer is streamed into the last one.
+// The card is laid out as: a collapsible block (folded by default) holding the
+// reasoning and the per-call tool log, a one-line summary outside that block,
+// and the answer. The summary sits outside because a folded collapsible_panel
+// renders none of its children, so anything the reader must see while folded
+// cannot live inside it.
 // The placeholder text follows the region so Lark users see English rather than
 // the Chinese wording Feishu users expect.
 func buildStreamingCardJSON(region Region) string {
@@ -1027,6 +1035,10 @@ func buildStreamingCardJSON(region Region) string {
 					},
 					"elements": []map[string]interface{}{
 						{
+							// One element carries the whole interleaved timeline: reasoning
+							// round, the tool call it led to, the next round. Splitting it
+							// into a reasoning element and a tool element would separate
+							// exactly the causal order the timeline is meant to show.
 							"tag":        "markdown",
 							"content":    "💭 " + region.ThinkingText,
 							"text_size":  "normal",
@@ -1038,7 +1050,7 @@ func buildStreamingCardJSON(region Region) string {
 					"tag":        "markdown",
 					"content":    "",
 					"text_size":  "normal",
-					"element_id": streamToolsElemID,
+					"element_id": streamSummaryElemID,
 				},
 				{
 					"tag":        "markdown",
@@ -1146,56 +1158,62 @@ func (a *Adapter) SendStreamChunk(ctx context.Context, incoming *im.IncomingMess
 	return a.UpdateStreamContent(ctx, incoming, streamID, content)
 }
 
-// UpdateStructuredStream pushes the three regions of an intermediate frame to
-// their own card elements. Thinking and tools update only when non-empty so the
-// placeholder / last content is not cleared between ticks; the answer region is
-// always refreshed.
+// UpdateStructuredStream pushes an intermediate frame to the card elements. The
+// answer goes first: it is what the reader is watching, and a frame that runs
+// out of budget mid-way must not leave the answer stale. The summary follows,
+// then the folded timeline keeps its previous content until the throttle window
+// opens, so a folded block does not spend the card's per-second budget.
+//
+// render.Tools is not pushed: the tool lines already live inside the folded
+// timeline (they are interleaved with the reasoning that produced them), and a
+// second copy in its own element would duplicate every row.
 func (a *Adapter) UpdateStructuredStream(ctx context.Context, incoming *im.IncomingMessage, streamID string, render im.IMStreamRender) error {
 	accessToken, err := a.getTenantAccessToken(ctx)
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
 	}
-	if render.Thinking != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, &thinkingRegionThrottle); err != nil {
-			logger.Warnf(ctx, "[%s] update thinking element failed: %v", a.region.Label, err)
-		}
-	}
-	if render.Tools != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools, nil); err != nil {
-			logger.Warnf(ctx, "[%s] update tools element failed: %v", a.region.Label, err)
-		}
-	}
 	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer, nil); err != nil {
 		logger.Warnf(ctx, "[%s] update answer element failed: %v", a.region.Label, err)
 		return err
+	}
+	if render.Summary != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamSummaryElemID, render.Summary, nil); err != nil {
+			logger.Warnf(ctx, "[%s] update summary element failed: %v", a.region.Label, err)
+		}
+	}
+	if render.Thinking != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, &foldedRegionThrottle); err != nil {
+			logger.Warnf(ctx, "[%s] update timeline element failed: %v", a.region.Label, err)
+		}
 	}
 	return nil
 }
 
 // FinalizeStructuredStream pushes the final frame: the answer region gets the
-// final answer, the tools region shows the final summary, and the thinking region
-// receives whatever the throttled stream last withheld, so the tail of the
-// reasoning is not lost and the create-time placeholder never survives.
+// final answer, the summary region gets the authoritative totals, and the folded
+// timeline receives whatever the throttled stream last withheld — the tail of
+// the reasoning, the final tool rows, and the create-time placeholder that must
+// not survive.
 func (a *Adapter) FinalizeStructuredStream(ctx context.Context, incoming *im.IncomingMessage, streamID string, render im.IMStreamRender) error {
 	accessToken, err := a.getTenantAccessToken(ctx)
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
 	}
-	if render.Thinking != "" {
-		// nil throttle: the final flush is unconditional, otherwise a reasoning
-		// block shorter than minGrowth would keep its "正在思考..." placeholder.
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, nil); err != nil {
-			logger.Warnf(ctx, "[%s] finalize thinking element failed: %v", a.region.Label, err)
-		}
-	}
-	if render.Tools != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools, nil); err != nil {
-			logger.Warnf(ctx, "[%s] finalize tools element failed: %v", a.region.Label, err)
-		}
-	}
 	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer, nil); err != nil {
 		logger.Warnf(ctx, "[%s] finalize answer element failed: %v", a.region.Label, err)
 		return err
+	}
+	if render.Summary != "" {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamSummaryElemID, render.Summary, nil); err != nil {
+			logger.Warnf(ctx, "[%s] finalize summary element failed: %v", a.region.Label, err)
+		}
+	}
+	if render.Thinking != "" {
+		// nil throttle: the final flush is unconditional, otherwise a timeline
+		// shorter than minGrowth would keep its "正在思考..." placeholder.
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, nil); err != nil {
+			logger.Warnf(ctx, "[%s] finalize timeline element failed: %v", a.region.Label, err)
+		}
 	}
 	return nil
 }

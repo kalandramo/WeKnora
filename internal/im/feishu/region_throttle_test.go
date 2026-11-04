@@ -59,7 +59,7 @@ func TestUpdateStructuredStream_ThrottlesThinkingRegion(t *testing.T) {
 		return pushes[elementID]
 	}
 
-	thinking := strings.Repeat("思", thinkingRegionThrottle.minGrowth)
+	thinking := strings.Repeat("思", foldedRegionThrottle.minGrowth)
 	answer := "最终回答"
 	if err := adapter.UpdateStructuredStream(ctx, nil, cardID, im.IMStreamRender{Thinking: thinking, Answer: answer}); err != nil {
 		t.Fatalf("first frame: %v", err)
@@ -67,7 +67,7 @@ func TestUpdateStructuredStream_ThrottlesThinkingRegion(t *testing.T) {
 
 	// Two small increments inside the same second: the thinking region must stay
 	// on its previous content, while the answer region keeps its own cadence.
-	thinking += strings.Repeat("考", thinkingRegionThrottle.minGrowth/4)
+	thinking += strings.Repeat("考", foldedRegionThrottle.minGrowth/4)
 	for i := 0; i < 2; i++ {
 		if err := adapter.UpdateStructuredStream(ctx, nil, cardID, im.IMStreamRender{Thinking: thinking, Answer: answer}); err != nil {
 			t.Fatalf("throttled frame %d: %v", i, err)
@@ -78,7 +78,7 @@ func TestUpdateStructuredStream_ThrottlesThinkingRegion(t *testing.T) {
 	}
 
 	// An increment at or above minGrowth is worth an immediate repaint.
-	thinking += strings.Repeat("考", thinkingRegionThrottle.minGrowth)
+	thinking += strings.Repeat("考", foldedRegionThrottle.minGrowth)
 	if err := adapter.UpdateStructuredStream(ctx, nil, cardID, im.IMStreamRender{Thinking: thinking, Answer: answer}); err != nil {
 		t.Fatalf("growth frame: %v", err)
 	}
@@ -97,6 +97,27 @@ func TestUpdateStructuredStream_ThrottlesThinkingRegion(t *testing.T) {
 	// The unchanged answer was only ever sent once.
 	if got := count(streamAnswerElemID); got != 1 {
 		t.Fatalf("answer region pushed %d times, want 1", got)
+	}
+
+	// The summary sits outside the folded panel, so it must never be throttled:
+	// it is the only thing a reader sees while the panel is collapsed.
+	if err := adapter.UpdateStructuredStream(ctx, nil, cardID, im.IMStreamRender{
+		Answer: answer, Summary: "思考 1 轮 · 调用 1 次工具",
+	}); err != nil {
+		t.Fatalf("summary frame: %v", err)
+	}
+	if got := count(streamSummaryElemID); got != 1 {
+		t.Fatalf("summary pushed %d times, want 1", got)
+	}
+	// A one-character change still goes out at once: on a collapsed card the
+	// summary is the entire visible evidence that the run is progressing.
+	if err := adapter.UpdateStructuredStream(ctx, nil, cardID, im.IMStreamRender{
+		Answer: answer, Summary: "思考 1 轮 · 调用 2 次工具",
+	}); err != nil {
+		t.Fatalf("summary growth frame: %v", err)
+	}
+	if got := count(streamSummaryElemID); got != 2 {
+		t.Fatalf("summary pushed %d times, want 2 (no throttle outside the folded panel)", got)
 	}
 }
 
@@ -122,12 +143,12 @@ func TestStreamRegionThrottle_Allows(t *testing.T) {
 			name:       "large growth is released immediately",
 			lastPushed: now.Add(-100 * time.Millisecond),
 			prev:       base,
-			next:       base + strings.Repeat("y", thinkingRegionThrottle.minGrowth),
+			next:       base + strings.Repeat("y", foldedRegionThrottle.minGrowth),
 			want:       true,
 		},
 		{
 			name:       "small growth after the interval is released",
-			lastPushed: now.Add(-thinkingRegionThrottle.minInterval),
+			lastPushed: now.Add(-foldedRegionThrottle.minInterval),
 			prev:       base,
 			next:       base + "y",
 			want:       true,
@@ -144,7 +165,7 @@ func TestStreamRegionThrottle_Allows(t *testing.T) {
 	}
 
 	for _, c := range cases {
-		if got := thinkingRegionThrottle.allows(now, c.lastPushed, c.prev, c.next); got != c.want {
+		if got := foldedRegionThrottle.allows(now, c.lastPushed, c.prev, c.next); got != c.want {
 			t.Errorf("%s: allows() = %v, want %v", c.name, got, c.want)
 		}
 	}

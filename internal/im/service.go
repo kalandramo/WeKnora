@@ -2572,6 +2572,14 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 
 		agentToolSteps    []IMToolStep
 		pipelineToolSteps []IMToolStep
+		// pendingThought accumulates the reasoning of the current round. It is
+		// attached to the next tool call and reset, which is what turns the folded
+		// card region into an interleaved timeline instead of two separated blocks.
+		pendingThought strings.Builder
+		// agentElapsedMs is the wall-clock duration reported on completion. Summing
+		// per-tool durations under-reports a multi-round run, because model latency
+		// and the final answer generation belong to no single tool.
+		agentElapsedMs int64
 
 		agentCompleteFinalAnswer string
 		streamedAny              bool
@@ -2581,6 +2589,9 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		mcpAuthServices []imMCPAuthService
 		mcpAuthSeen     = make(map[string]bool)
 	)
+	// streamStart measures the running elapsed time shown in the folded block
+	// header until the completion event supplies the authoritative duration.
+	streamStart := time.Now()
 	closeDone := func() { closeOnce.Do(func() { close(done) }) }
 	closeComplete := func() { completeOnce.Do(func() { close(completeDone) }) }
 
@@ -2589,6 +2600,7 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 			return
 		}
 		agentInner.write(s)
+		pendingThought.WriteString(s)
 		streamedAny = true
 	}
 	reasoningWrite := func(s string) {
@@ -2604,6 +2616,13 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		if agentLiveAnswer.Len() == 0 {
 			return
 		}
+		// The retracted preamble is reasoning that preceded the first tool call, so
+		// it joins the current reasoning round rather than vanishing from the
+		// timeline the user expands.
+		if pendingThought.Len() > 0 {
+			pendingThought.WriteString("\n\n")
+		}
+		pendingThought.WriteString(agentLiveAnswer.String())
 		if agentInner.text.Len() > 0 {
 			agentInner.ensureNewlineBefore()
 		}
@@ -2616,14 +2635,22 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		if useAgent {
 			mode = IMStreamModeAgent
 		}
+		// Until the completion event arrives the header shows a live clock; the
+		// authoritative wall-clock value replaces it at finalize.
+		elapsed := agentElapsedMs
+		if elapsed == 0 {
+			elapsed = time.Since(streamStart).Milliseconds()
+		}
 		return IMStreamParts{
 			Mode:              mode,
 			PipelineToolSteps: pipelineToolSteps,
 			ReasoningInner:    reasoningInner.text.String(),
 			AgentInner:        agentInner.text.String(),
 			AgentToolSteps:    agentToolSteps,
+			TrailingThought:   pendingThought.String(),
 			LiveAnswer:        agentLiveAnswer.String(),
 			Answer:            answerOuter.String(),
+			ElapsedMs:         elapsed,
 		}
 	}
 
@@ -2690,6 +2717,9 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 		bufMu.Lock()
 		agentDone = true
 		agentCompleteFinalAnswer = data.FinalAnswer
+		if data.TotalDurationMs > 0 {
+			agentElapsedMs = data.TotalDurationMs
+		}
 		applyIMCompleteDataToMessage(assistantMsg, data)
 		mergeIMAgentAnswerBuffers(&answerBuilder, &answerOuter, &agentLiveAnswer, data.FinalAnswer)
 		bufMu.Unlock()
@@ -2747,10 +2777,18 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 			streamedAny = true
 		} else if useAgent {
 			retractAgentLiveAnswer()
+			// Attach the reasoning that led to this call and start a new round. This
+			// is what keeps the expanded card in causal order instead of showing all
+			// reasoning followed by all tool calls.
+			thought := strings.TrimSpace(pendingThought.String())
+			pendingThought.Reset()
 			upsertIMToolStep(&agentToolSteps, agentToolIdx, data.ToolCallID, func(step *IMToolStep) {
 				step.ToolName = data.ToolName
 				step.Pending = true
 				step.Arguments = data.Arguments
+				if step.Thought == "" {
+					step.Thought = thought
+				}
 			})
 			streamedAny = true
 		}
@@ -2999,14 +3037,32 @@ loop:
 
 	var finalizeErr error
 	if ss, ok := streamer.(StructuredStreamSender); ok {
+		// The folded block keeps the full interleaved timeline (reasoning round, the
+		// tool call it led to, the next round …); the summary is a separate region
+		// because a folded block hides its children, and it reports the same three
+		// numbers the Web timeline header shows.
+		elapsedMs := parts.ElapsedMs
 		finalRender := IMStreamRender{Answer: finalDisplay}
 		if parts.Mode == IMStreamModeQuickQA {
 			finalRender.Thinking = formatQARenderThinking(parts.ReasoningInner)
-			finalRender.Tools = FormatIMToolSummary(parts.PipelineToolSteps)
+			finalRender.Tools = renderIMToolSteps(parts.PipelineToolSteps, FormatIMRagPipelineLine)
+			finalRender.Summary = FormatIMExecutionSummary(
+				0, len(visibleIMToolSteps(parts.PipelineToolSteps)), elapsedMs)
 		} else {
-			finalRender.Thinking = formatAgentRenderThinking(parts.AgentInner)
-			finalRender.Tools = FormatIMToolSummary(parts.AgentToolSteps)
+			finalRender.Thinking = renderIMAgentTimeline(parts.AgentToolSteps, parts.TrailingThought)
+			finalRender.Tools = renderIMToolSteps(parts.AgentToolSteps, FormatIMToolLine)
+			finalRender.Summary = FormatIMExecutionSummary(
+				IMThinkingRounds(parts.AgentToolSteps, parts.TrailingThought),
+				len(visibleIMToolSteps(parts.AgentToolSteps)),
+				elapsedMs,
+			)
 		}
+		// Intermediate frames clean every region; the final frame used to skip it,
+		// which left raw image/file markdown in the folded detail once the stream
+		// ended.
+		finalRender.Thinking = cleanIMContent(outCtx, finalRender.Thinking, fileResolver)
+		finalRender.Tools = cleanIMContent(outCtx, finalRender.Tools, fileResolver)
+		finalRender.Summary = cleanIMContent(outCtx, finalRender.Summary, fileResolver)
 		finalizeErr = ss.FinalizeStructuredStream(outCtx, msg, streamID, finalRender)
 	} else {
 		finalizeErr = streamer.FinalizeStream(outCtx, msg, streamID, finalDisplay)
