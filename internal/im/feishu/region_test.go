@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -223,5 +224,52 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 	// Guard the point of the whole exercise: the copy actually differs.
 	if RegionFeishu.ThinkingText == RegionLark.ThinkingText {
 		t.Error("Feishu and Lark share ThinkingText; Lark users would see Chinese copy")
+	}
+}
+
+// Feishu rejects a card whose element_id breaks its format rule (300301, code
+// 1002): only ASCII letters, digits and underscores, starting with a letter, at
+// most 20 characters. The card is rejected as a whole, which silently degrades
+// every reply to a plain-text message, so the rule is asserted over the whole
+// JSON tree rather than on the handful of constants.
+func TestBuildStreamingCardJSON_ElementIDsAreValid(t *testing.T) {
+	validElementID := regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_]{0,19}$`)
+
+	var walk func(t *testing.T, regionLabel string, node any, seen map[string]bool)
+	walk = func(t *testing.T, regionLabel string, node any, seen map[string]bool) {
+		t.Helper()
+		switch v := node.(type) {
+		case map[string]any:
+			if raw, ok := v["element_id"]; ok {
+				id, _ := raw.(string)
+				if !validElementID.MatchString(id) {
+					t.Errorf("%s element_id %q is invalid (len %d, want ^[A-Za-z][A-Za-z0-9_]{0,19}$)",
+						regionLabel, id, len(id))
+				}
+				if seen[id] {
+					t.Errorf("%s element_id %q is duplicated", regionLabel, id)
+				}
+				seen[id] = true
+			}
+			for _, child := range v {
+				walk(t, regionLabel, child, seen)
+			}
+		case []any:
+			for _, child := range v {
+				walk(t, regionLabel, child, seen)
+			}
+		}
+	}
+
+	for _, region := range []Region{RegionFeishu, RegionLark} {
+		var card map[string]any
+		if err := json.Unmarshal([]byte(buildStreamingCardJSON(region)), &card); err != nil {
+			t.Fatalf("%s card is not valid JSON: %v", region.Label, err)
+		}
+		seen := make(map[string]bool)
+		walk(t, region.Label, card, seen)
+		if len(seen) != 4 {
+			t.Errorf("%s card declares %d element_ids, want 4 (panel + 3 regions)", region.Label, len(seen))
+		}
 	}
 }

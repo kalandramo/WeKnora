@@ -906,8 +906,10 @@ const (
 	// collapsiblePanelTag is the Card JSON 2.0 tag of the collapsible container.
 	// Spelling it "collapsible" is rejected by the card builder.
 	collapsiblePanelTag = "collapsible_panel"
-	// streamThinkingPanelID addresses the collapsible container itself.
-	streamThinkingPanelID = "stream_thinking_panel"
+	// streamThinkingPanelID addresses the collapsible container itself. Feishu
+	// rejects an element_id longer than 20 characters (300301, code 1002), so the
+	// name is trimmed: "stream_thinking_panel" is 21 and fails card creation.
+	streamThinkingPanelID = "stream_think_panel"
 	// streamThinkingPanelTitle is the collapsible header text.
 	streamThinkingPanelTitle = "💭 思考过程"
 	// streamThinkingElemID is the markdown element inside the collapsible that

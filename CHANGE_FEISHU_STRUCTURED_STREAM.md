@@ -171,6 +171,7 @@
 1. `internal/im/feishu/adapter.go`
    - 折叠容器改为 `collapsible_panel`，折叠状态改为顶层 `expanded: false`，并为容器本身补 `element_id`（`stream_thinking_panel`）。
    - 卡片创建失败时把卡片 JSON 打进 Warn 日志，避免同类问题再次只剩一句 `falling back to non-streaming`。
+   - 容器 `element_id` 由 `stream_thinking_panel`（21 字符）改为 `stream_think_panel`（18 字符）：飞书限制 element_id ≤20 字符且须以字母开头，超长返回 `300301 / code 1002`，同样会导致整卡创建失败。新增 `TestBuildStreamingCardJSON_ElementIDsAreValid` 遍历整个卡片 JSON 树校验格式与唯一性，杜绝同类问题。
 2. `internal/im/think.go`
    - 新增 `CollapsibleThinkStyle`：思考区正文不再输出 `> ` 引用前缀与重复的 `**思考过程**` 标题（折叠面板 header 已有标题）。
 3. 测试：`region_test.go` 改断 `collapsible_panel` / `expanded` / 面板标题；`structured_stream_test.go` 改为断言思考区为纯段落、不含 `> `。
