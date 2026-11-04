@@ -26,7 +26,7 @@
 
 | element_id         | 类型        | 作用                                   | 默认状态        |
 | ------------------ | ----------- | -------------------------------------- | --------------- |
-| `stream_thinking`  | `collapsible` | 思考过程，可折叠，避免卡片过长         | `folded: true`（默认收起） |
+| `stream_thinking_panel` → `stream_thinking` | `collapsible_panel` + 内嵌 `markdown` | 思考过程，可折叠，避免卡片过长 | `expanded: false`（默认收起） |
 | `stream_tools`     | `markdown`  | 工具进度（流式）+ 末尾汇总（收尾）      | 空              |
 | `stream_answer`    | `markdown`  | 流式 / 最终回答，置顶展示               | 空              |
 
@@ -77,10 +77,10 @@
 | `internal/im/think.go` | 新增 `BuildIMStructuredRender`（三区域拆分，兼容 hideThinking）、`formatAgentRenderThinking`、`formatQARenderThinking`。 |
 | `internal/im/tool_display.go` | `IMToolStep` 加 `DurationMs`；`FormatIMToolLine` 加状态前缀 + 耗时后缀；新增 `imToolDurationLabel`、`FormatIMToolSummary`。 |
 | `internal/im/service.go` | ① 两处 `EventAgentToolResult` 回调落 `DurationMs`；② `flush()` 内接入 `StructuredStreamSender` 分支（含 `cleanIMContent` 清洗）；③ 收尾 `FinalizeStream` 改为按是否实现接口分流。 |
-| `internal/im/feishu/adapter.go` | 常量改为三元素 ID；`feishuStreamState` 加 `regionContent` 幂等缓存；`buildStreamingCardJSON` 重写为三区域（collapsible 默认 `folded`）；新增 `UpdateStructuredStream` / `FinalizeStructuredStream` / `updateStreamElement`（内容未变则跳过 CardKit 请求）；`SendStreamChunk` 保留为 `UpdateStreamContent` 别名。 |
+| `internal/im/feishu/adapter.go` | 常量改为三元素 ID；`feishuStreamState` 加 `regionContent` 幂等缓存；`buildStreamingCardJSON` 重写为三区域（`collapsible_panel` + 顶层 `expanded: false`）；新增 `UpdateStructuredStream` / `FinalizeStructuredStream` / `updateStreamElement`（内容未变则跳过 CardKit 请求）；`SendStreamChunk` 保留为 `UpdateStreamContent` 别名。 |
 | `internal/im/feishu/longconn_test.go` | **修复仓库既有 bug**：`convertEvent(RegionFeishu, event)` 补第三参。 |
 | `internal/im/tool_display_test.go` | 更新 `TestFormatIMToolLine_grepPatterns` 断言以适配新的 `[完成]` 前缀。 |
-| `internal/im/feishu/region_test.go` | 适配三区域卡片结构（原断言期望 1 个 element）；修正 `Summary.Content` 的 JSON tag（`summary` → `content`，此前该断言长期"假通过"）；新增 collapsible 默认折叠断言。 |
+| `internal/im/feishu/region_test.go` | 适配三区域卡片结构（原断言期望 1 个 element）；修正 `Summary.Content` 的 JSON tag（`summary` → `content`，此前该断言长期"假通过"）；新增 `collapsible_panel` 与 `expanded:false` 断言。 |
 | `internal/im/feishu/stream_summary_test.go`（新增） | 收尾摘要取自答案区域（结构化路径）与回退旧内容缓冲（旧路径）两条路径的覆盖。 |
 | `internal/im/structured_stream_test.go`（新增） | 4 个纯函数测试：`TestBuildIMStructuredRenderAgent`、`TestBuildIMStructuredRenderHideThinking`、`TestFormatIMToolLineStatusAndDuration`、`TestFormatIMToolSummary`。 |
 
@@ -100,7 +100,7 @@
 
 ## 五、风险点
 
-1. **`collapsible` 在 `streaming_mode` 下的兼容性**：飞书官方对 "streaming_mode + collapsible 折叠块按 `element_id` 增量更新" 这一组合的支持度需实卡确认。用户已拍板"直接全量实施"并承担该风险；**需在飞书真实卡片上验证**：折叠块默认是否收起、能否按 `element_id` 正常更新、收尾后是否保持折叠。
+1. **`collapsible_panel` 在 `streaming_mode` 下的兼容性**：飞书官方对 "streaming_mode + collapsible_panel 折叠块按 `element_id` 增量更新" 这一组合的支持度需实卡确认。用户已拍板"直接全量实施"并承担该风险；**需在飞书真实卡片上验证**：折叠块默认是否收起、能否按 `element_id` 正常更新、收尾后是否保持折叠。
 2. **多区域共享 `seq`**：单卡所有区域共用一个单调递增 `seq`，`updateStreamElement` 已通过 `state.mu` 保护 + `nextSeq()` 保证顺序；逻辑自洽，但实卡确认一次更稳妥。
 3. **整仓构建环境**：整仓 `go build ./...` 受本机 CGO 工具链缺失影响（`sqlite-vec` 缺 `sqlite3.h`、`duckdb` 链接缺 `pthread`）无法跑通，**与本次改动无关**；`internal/im/...` 单独构建已证明改动自洽。
 
@@ -144,5 +144,43 @@
 
 - [ ] `git commit`（用户当前选择暂不提交，保持本地未提交状态）。
 - [ ] 部署后在飞书实卡验证：折叠块默认折叠、按 `element_id` 增量更新、工具汇总行位置与文案、会话列表摘要是否显示最终答案。
-- [ ] 若实卡发现 `collapsible` + `streaming_mode` 不兼容，需回退思考区为普通 markdown 或调整折叠策略。
+- [ ] 若实卡发现 `collapsible_panel` + `streaming_mode` 不兼容，需回退思考区为普通 markdown 或调整折叠策略。
 
+
+---
+
+## 八、部署后故障定位与修复（2026-11-04）
+
+### 现象
+
+飞书侧收到的回答**完全不是卡片**：无卡片标题栏、无折叠块，正文里 `**粗体**`、反引号、`| 表格 |`、`- 列表` 全部原样显示，段落之间间距异常放大。
+
+### 根因
+
+`buildStreamingCardJSON` 用了不存在的组件 tag 与折叠字段：
+
+| 字段 | 错误写法 | 正确写法 |
+| --- | --- | --- |
+| 折叠容器 tag | `"tag": "collapsible"` | `"tag": "collapsible_panel"` |
+| 默认折叠状态 | `header.folded: true` | 顶层 `expanded: false` |
+
+卡片 JSON 校验不通过 → `POST /cardkit/v1/cards` 返回 `200220 Failed to generate card content` → `StartStream` 失败 → `service.go` 走「非流式降级」：**重新跑一遍 QA**，再用 `msg_type=text` 把答案当纯文本发出去。纯文本消息不解析 Markdown，所以看到的是源码形态；也正因为重跑了一次 QA，该轮模型的 token 消耗翻倍。
+
+### 修复
+
+1. `internal/im/feishu/adapter.go`
+   - 折叠容器改为 `collapsible_panel`，折叠状态改为顶层 `expanded: false`，并为容器本身补 `element_id`（`stream_thinking_panel`）。
+   - 卡片创建失败时把卡片 JSON 打进 Warn 日志，避免同类问题再次只剩一句 `falling back to non-streaming`。
+2. `internal/im/think.go`
+   - 新增 `CollapsibleThinkStyle`：思考区正文不再输出 `> ` 引用前缀与重复的 `**思考过程**` 标题（折叠面板 header 已有标题）。
+3. 测试：`region_test.go` 改断 `collapsible_panel` / `expanded` / 面板标题；`structured_stream_test.go` 改为断言思考区为纯段落、不含 `> `。
+4. 思考区增量阈值节流（`streamRegionThrottle`）：思考区仅在**增量 ≥200 字符**或**距上次推送 ≥1s** 时重推；内容变短（撤回前言）与收尾帧**不受节流**，前者避免卡片残留已撤回文本，后者保证被节流的尾段不会丢。答案区与工具区仍即时推送。
+   - 单卡出站峰值由约 10 次/秒（正好顶到飞书上限）降到约 4.5 次/秒。
+
+验证：`go vet ./internal/im/...` 与 `go test ./internal/im/ ./internal/im/feishu/` 均通过。
+
+### 仍未处理（建议纳入下次迭代）
+
+1. `collapsible_panel` 需要飞书客户端 **V7.9+**，低版本客户端会显示"请升级客户端查看内容"的占位图（按用户决定暂不处理）。
+2. `flush()` 结构化分支绕过了 `holdbackCutoff`，答案区可能短暂出现未闭合的链接/图片标记。
+3. 思考区内容参与单卡 30KB 体积上限，长推理需截断或摘要。
