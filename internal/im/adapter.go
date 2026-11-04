@@ -171,16 +171,23 @@ type FullOutputProgressSender interface {
 	SupportsFullOutputProgress() bool
 }
 
-// IMStreamRender carries the three separable card regions of a stream frame.
+// IMStreamRender carries the separable card regions of a stream frame.
 // Adapters that implement StructuredStreamSender lay these out as distinct card
-// elements (a collapsible thinking region, a tool summary region, and the answer
-// region) instead of a single streaming markdown element.
+// elements (a collapsible thinking + tool-detail block, a one-line summary
+// pinned outside it, and the answer region) instead of a single streaming
+// markdown element.
 type IMStreamRender struct {
 	// Thinking is the reasoning / retracted-preamble region. It is shown inside a
 	// collapsible block so long reasoning does not stretch the card.
 	Thinking string
-	// Tools is the tool-progress / tool-summary region.
+	// Tools is the tool-progress / tool-detail region. It sits in the same
+	// collapsible block as Thinking: the running log is diagnostic detail, not
+	// something a reader needs above the answer.
 	Tools string
+	// Summary is the one-line tool summary (count / success / duration). A
+	// collapsed collapsible block hides its children entirely, so the summary
+	// lives outside the block to stay readable while the details are folded.
+	Summary string
 	// Answer is the streaming or final answer text (top of the card).
 	Answer string
 }
@@ -198,8 +205,8 @@ type StructuredStreamSender interface {
 	// written to their own card elements.
 	UpdateStructuredStream(ctx context.Context, incoming *IncomingMessage, streamID string, render IMStreamRender) error
 	// FinalizeStructuredStream pushes the final frame: the answer region gets the
-	// final answer, the tools region shows the final summary, and the thinking
-	// region is left collapsed (its content was already delivered during streaming).
+	// final answer, the summary region shows the tool totals, and the folded
+	// block keeps the full reasoning and tool detail for readers who expand it.
 	FinalizeStructuredStream(ctx context.Context, incoming *IncomingMessage, streamID string, render IMStreamRender) error
 }
 
