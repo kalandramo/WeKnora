@@ -235,6 +235,18 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 		if answer.TextSize != "normal" {
 			t.Errorf("%s answer text_size = %q, want normal", region.Label, answer.TextSize)
 		}
+		// The card is sent before the pipeline produces anything, and the first
+		// tool round can take a minute: an empty answer region reads as a card
+		// that failed to load, so it starts on the thinking placeholder.
+		if answer.Content != streamAnswerPlaceholder(region) {
+			t.Errorf("%s answer content = %q, want the thinking placeholder %q",
+				region.Label, answer.Content, streamAnswerPlaceholder(region))
+		}
+		// The body placeholder and the quiet-thinking restore text must agree, or
+		// withholding a frame would repaint the body with different copy.
+		if streamAnswerPlaceholder(region) != ("💭 " + region.ThinkingText) {
+			t.Errorf("%s placeholder drifts from ThinkingText", region.Label)
+		}
 		if streamingElementID != streamAnswerElemID {
 			t.Errorf("streamingElementID = %q, want %q", streamingElementID, streamAnswerElemID)
 		}

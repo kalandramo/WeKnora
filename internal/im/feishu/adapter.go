@@ -251,7 +251,17 @@ func (a *Adapter) SupportsFullOutputProgress() bool {
 // answer chunk, so the quiet-thinking policy can restore it after withholding a
 // frame (see im/stream_visibility.go). Must match buildStreamingCardJSON.
 func (a *Adapter) ThinkingPlaceholder() string {
-	return "💭 " + a.region.ThinkingText
+	return streamAnswerPlaceholder(a.region)
+}
+
+// streamAnswerPlaceholder is the body text a freshly created card carries in the
+// answer region. The card must never present an empty body while the agent is
+// still working: an empty region reads as a broken card, and the only thing the
+// reader can be told at that point is that the model is thinking. Sharing one
+// helper with ThinkingPlaceholder keeps the create-time frame and the
+// quiet-thinking restore path from drifting apart.
+func streamAnswerPlaceholder(region Region) string {
+	return "💭 " + region.ThinkingText
 }
 
 // VerifyCallback verifies the Feishu event callback by checking the verification token.
@@ -1056,8 +1066,12 @@ func buildStreamingCardJSON(region Region) string {
 					"element_id": streamSummaryElemID,
 				},
 				{
+					// The answer region starts on the thinking placeholder, not on
+					// empty content: the first tool round can take a minute, and an
+					// empty body reads as a card that failed to load. The first real
+					// answer chunk overwrites it.
 					"tag":        "markdown",
-					"content":    "",
+					"content":    streamAnswerPlaceholder(region),
 					"text_size":  "normal",
 					"element_id": streamAnswerElemID,
 				},
@@ -1092,9 +1106,15 @@ func (a *Adapter) StartStream(ctx context.Context, incoming *im.IncomingMessage)
 		return "", fmt.Errorf("send card message: %w", err)
 	}
 
-	// 3. Track stream state
+	// 3. Track stream state. The answer region is recorded as already carrying
+	// the placeholder buildStreamingCardJSON put there, so the frames sent while
+	// no answer exists yet skip a redundant CardKit round-trip.
 	feishuStreamsMu.Lock()
-	feishuStreams[cardID] = &feishuStreamState{lastActivityAt: time.Now(), ownerDone: ctx.Done()}
+	feishuStreams[cardID] = &feishuStreamState{
+		lastActivityAt: time.Now(),
+		ownerDone:      ctx.Done(),
+		regionContent:  map[string]string{streamAnswerElemID: streamAnswerPlaceholder(a.region)},
+	}
 	feishuStreamsMu.Unlock()
 
 	logger.Infof(ctx, "[%s] Streaming started: card_id=%s", a.region.Label, cardID)
@@ -1175,7 +1195,15 @@ func (a *Adapter) UpdateStructuredStream(ctx context.Context, incoming *im.Incom
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
 	}
-	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer, nil); err != nil {
+	// No answer yet means the model has not started writing the reply (or a tool
+	// call retracted the preamble it had begun). Put the thinking placeholder
+	// back instead of leaving the region untouched: a half-sentence that the
+	// agent has already discarded must not stay parked under the summary.
+	answer := render.Answer
+	if strings.TrimSpace(answer) == "" {
+		answer = streamAnswerPlaceholder(a.region)
+	}
+	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, answer, nil); err != nil {
 		logger.Warnf(ctx, "[%s] update answer element failed: %v", a.region.Label, err)
 		return err
 	}
@@ -1299,8 +1327,10 @@ func (a *Adapter) EndStream(ctx context.Context, incoming *im.IncomingMessage, s
 	// The structured path writes the answer into its own card element and never
 	// touches state.content, so the summary must come from the answer region.
 	// The legacy single-element path still fills state.content.
+	// A region still holding the create-time placeholder carries no answer: using
+	// it would pin "正在思考..." to the chat list under a finished card.
 	source := state.content.String()
-	if answer := state.regionContent[streamAnswerElemID]; answer != "" {
+	if answer := state.regionContent[streamAnswerElemID]; answer != "" && answer != streamAnswerPlaceholder(a.region) {
 		source = answer
 	}
 	preview := cardSummaryPreview(source)

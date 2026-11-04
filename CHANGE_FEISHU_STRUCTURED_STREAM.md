@@ -282,3 +282,46 @@ go test ./internal/im/ ./internal/im/feishu/    ✅ ok / ok
 ### 验证
 
 `go test ./internal/im/ ./internal/im/feishu/` 通过。新增断言：行内不含空行、思考行以「💡 思考 · 」开头且摘要 ≤50 字并带省略号、markdown 标记被剥离、工具行 ≤80 字、40 轮时行数封顶 24+1、摘要元素 `text_size=notation`、空详情用替代文案。
+
+## 十一、正文在答案出现前保持「正在思考...」（2026-11-04）
+
+### 现象
+
+卡片一发出，正文区就是空白：只有折叠的「💭 执行详情」和一行摘要，下面什么都没有；等模型开始输出中间稿时，那段被工具调用丢弃的文本又挂到正文里，看起来像「思考、调用」下面续了一段思考内容。
+
+两个独立成因：
+
+1. `buildStreamingCardJSON` 把 answer 元素建成 `content: ""`，而 `updateStreamElement` 对空内容直接跳过 —— 首个工具轮次往往要几十秒，这段时间正文既没有内容也不会被刷新，视觉上就是一张没加载完的卡。
+2. `BuildIMStructuredRender` 的 agent 分支把 `parts.LiveAnswer` 当作正文。`LiveAnswer` 是乐观流式：模型在 run 结束前吐出的文本，只要下一轮工具调用出现就会被 `retractAgentLiveAnswer` 搬进思考区。它被当正文渲染，等于把一段已撤回的推理残句停在摘要下面 —— 同一段文字在折叠区里是「思考」，在正文区里却像答案。
+
+### 改动
+
+| 位置 | 改动 |
+| --- | --- |
+| `feishu/adapter.go` `buildStreamingCardJSON` | answer 元素初始内容 = `streamAnswerPlaceholder(region)`（`💭 ` + `ThinkingText`），创建即有正文占位 |
+| `feishu/adapter.go` `StartStream` | 初始化 `regionContent[stream_answer]` 为同一占位，避免空答案帧反复重推相同文本 |
+| `feishu/adapter.go` `UpdateStructuredStream` | `Answer` 为空时改推占位：答案被撤回后正文回到「正在思考...」，不残留半句 |
+| `feishu/adapter.go` `EndStream` | 摘要来源忽略占位值 —— 否则没产出答案的卡会把「正在思考...」钉在会话列表 |
+| `im/think.go` `BuildIMStructuredRender` | agent 与 hideThinking 两个分支的正文只取 `parts.Answer`，不再回退 `LiveAnswer` |
+| `feishu/adapter.go` `ThinkingPlaceholder` | 复用 `streamAnswerPlaceholder`，创建期占位与静默思考恢复文案永不漂移 |
+
+`IMStreamRender.Tools` 仍无消费者；`IMAnswerText` / `ShouldPushStreamFrame`（非结构化单元素路径，DingTalk/Slack/Telegram 等）继续把 `LiveAnswer` 算作答，本次只收紧结构化卡片。
+
+### 行为
+
+```
+创建        💭 执行详情（折叠） | 思考 0 轮… | 💭 正在思考...
+工具轮次中  💭 执行详情（折叠） | 思考 3 轮 · 调用 4 次工具 · 耗时 52s | 💭 正在思考...
+答案到达    💭 执行详情（折叠） | 思考 5 轮 · 调用 4 次工具 · 耗时 1m 24s | 查询完成。这个 IP 在 CMDB…
+```
+
+代价：agent 模式下最后一段答案在 `EventAgentComplete` 之前只进 `LiveAnswer`，因此正文会从占位直接跳到最终答案，失去这段的逐字流式。这与「回复未返回前保持正在思考」的要求一致，且 `LiveAnswer` 本来就可能被撤回，不能作为正文。
+
+### 验证
+
+`go test ./internal/im/...` 全绿。新增：
+- `TestBuildIMStructuredRenderIgnoresLiveAnswer` —— `LiveAnswer` 非空但 `Answer` 为空时正文为空，同一文本仍出现在折叠时间线；`Answer` 到达后正文替换。
+- `TestUpdateStructuredStream_AnswerRegionHoldsPlaceholder` —— 空答案不重画正文、真答案覆盖、撤回后占位回填。
+- `TestEndStreamSummarySkipsAnswerPlaceholder` —— 会话列表摘要不继承占位。
+- `region_test.go` 断言创建期 answer 内容等于占位，且占位与 `ThinkingText` 一致。
+

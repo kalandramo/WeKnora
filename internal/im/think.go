@@ -181,14 +181,17 @@ const (
 // children, so the summary must not live inside it), and the answer. With
 // hideThinking the reasoning, detail and summary regions are all suppressed and
 // only the answer is returned (quiet-thinking policy).
+//
+// Only parts.Answer reaches the answer region in agent mode. parts.LiveAnswer is
+// the optimistic stream — text the model emits before the run completes, which
+// the next tool call retracts into the thinking region. Rendering it as the
+// answer is what put a discarded reasoning fragment in the card body while the
+// folded panel correctly showed the same text as a thought. Until a real answer
+// exists the region keeps its "正在思考..." placeholder.
 func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinking bool) IMStreamRender {
 	_ = agentRunning
 	if hideThinking {
-		answer := strings.TrimSpace(parts.Answer)
-		if answer == "" && parts.Mode == IMStreamModeAgent {
-			answer = strings.TrimSpace(parts.LiveAnswer)
-		}
-		return IMStreamRender{Answer: answer}
+		return IMStreamRender{Answer: strings.TrimSpace(parts.Answer)}
 	}
 
 	var thinking, tools, summary, answer string
@@ -216,10 +219,7 @@ func BuildIMStructuredRender(parts IMStreamParts, agentRunning bool, hideThinkin
 			len(visibleIMToolSteps(parts.AgentToolSteps)),
 			parts.ElapsedMs,
 		)
-		answer = strings.TrimSpace(parts.LiveAnswer)
-		if a := strings.TrimSpace(parts.Answer); a != "" {
-			answer = a
-		}
+		answer = strings.TrimSpace(parts.Answer)
 	}
 	return IMStreamRender{
 		Thinking: strings.TrimSpace(thinking),
