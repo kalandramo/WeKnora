@@ -11,7 +11,7 @@ func TestBuildIMStructuredRenderAgent(t *testing.T) {
 		AgentInner:      "先检索知识库再总结",
 		AgentToolSteps:  []IMToolStep{{Thought: "先检索知识库再总结", ToolName: "web_search", Success: true, DurationMs: 1500}},
 		TrailingThought: "检索到了三条记录",
-		LiveAnswer:      "这是最终回答",
+		Answer:          "这是最终回答",
 		ElapsedMs:       153000,
 	}
 	r := BuildIMStructuredRender(parts, true, false)
@@ -48,12 +48,41 @@ func TestBuildIMStructuredRenderAgent(t *testing.T) {
 	}
 }
 
+// The agent streams its preamble into LiveAnswer and retracts it into the
+// thinking region as soon as a tool call follows. Rendering LiveAnswer as the
+// answer is what put a discarded reasoning fragment under the summary — the
+// folded panel showed the same text as a thought while the body showed it as the
+// reply. The body must stay empty (the card keeps its placeholder) until a real
+// answer exists.
+func TestBuildIMStructuredRenderIgnoresLiveAnswer(t *testing.T) {
+	parts := IMStreamParts{
+		Mode:           IMStreamModeAgent,
+		AgentInner:     "先看资产台账",
+		AgentToolSteps: []IMToolStep{{Thought: "先看资产台账", ToolName: "read_file", Success: true}},
+		LiveAnswer:     "Skill 已加载。IP 不在 10.66 网段，归属结论以",
+	}
+	r := BuildIMStructuredRender(parts, true, false)
+	if r.Answer != "" {
+		t.Fatalf("answer region must stay empty until the real answer arrives, got %q", r.Answer)
+	}
+	// The same text still belongs to the run, so it must survive in the timeline.
+	if !strings.Contains(r.Thinking, "先看资产台账") {
+		t.Fatalf("live/retracted text should stay in the folded timeline, got %q", r.Thinking)
+	}
+
+	// Once the agent reports the real answer, it replaces the placeholder.
+	parts.Answer = "IP 归属 CMDB 资产。"
+	if got := BuildIMStructuredRender(parts, true, false).Answer; got != "IP 归属 CMDB 资产。" {
+		t.Fatalf("real answer must reach the answer region, got %q", got)
+	}
+}
+
 func TestBuildIMStructuredRenderHideThinking(t *testing.T) {
 	parts := IMStreamParts{
 		Mode:           IMStreamModeAgent,
 		AgentInner:     "should be hidden",
 		AgentToolSteps: []IMToolStep{{ToolName: "web_search", Success: true}},
-		LiveAnswer:     "only answer",
+		Answer:         "only answer",
 	}
 	r := BuildIMStructuredRender(parts, true, true)
 	if r.Thinking != "" || r.Tools != "" || r.Summary != "" {
