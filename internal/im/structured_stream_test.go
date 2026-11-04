@@ -13,8 +13,13 @@ func TestBuildIMStructuredRenderAgent(t *testing.T) {
 		LiveAnswer:     "这是最终回答",
 	}
 	r := BuildIMStructuredRender(parts, true, false)
-	if !strings.Contains(r.Thinking, "思考") {
-		t.Fatalf("thinking region should contain 思考, got %q", r.Thinking)
+	// The collapsible panel already carries the "思考过程" title, so the region
+	// body must stay plain: no blockquote markers, no duplicated header.
+	if r.Thinking != "先检索知识库再总结" {
+		t.Fatalf("thinking region should carry the raw reasoning, got %q", r.Thinking)
+	}
+	if strings.Contains(r.Thinking, "> ") {
+		t.Fatalf("thinking region must not be a card blockquote, got %q", r.Thinking)
 	}
 	if !strings.Contains(r.Tools, "网络搜索") {
 		t.Fatalf("tools region should mention the tool, got %q", r.Tools)

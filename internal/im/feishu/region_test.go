@@ -145,10 +145,11 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 			} `json:"config"`
 			Body struct {
 				Elements []struct {
-					Tag      string `json:"tag"`
-					Content  string `json:"content"`
+					Tag       string `json:"tag"`
+					Content   string `json:"content"`
 					ElementID string `json:"element_id"`
-					Header   struct {
+					Expanded  *bool  `json:"expanded"`
+					Header    struct {
 						Title struct {
 							Content string `json:"content"`
 						} `json:"title"`
@@ -178,11 +179,23 @@ func TestBuildStreamingCardJSON_PlaceholderFollowsRegion(t *testing.T) {
 		}
 
 		thinking := card.Body.Elements[0]
-		if thinking.Tag != "collapsible" {
-			t.Errorf("%s thinking region tag = %q, want collapsible", region.Label, thinking.Tag)
+		// Card JSON 2.0 tags the collapsible container "collapsible_panel" and
+		// keeps the fold state in the top-level "expanded" field. Both were wrong
+		// once already ("collapsible" + header.folded), which made card creation
+		// fail and silently degraded every reply to a plain-text message.
+		if thinking.Tag != collapsiblePanelTag {
+			t.Errorf("%s thinking region tag = %q, want %q", region.Label, thinking.Tag, collapsiblePanelTag)
 		}
-		if !thinking.Header.Folded {
+		if thinking.Expanded == nil {
+			t.Errorf("%s thinking region has no expanded field", region.Label)
+		} else if *thinking.Expanded {
 			t.Errorf("%s thinking region should be folded by default", region.Label)
+		}
+		if thinking.Header.Folded {
+			t.Errorf("%s thinking region uses the non-existent header.folded field", region.Label)
+		}
+		if thinking.Header.Title.Content != streamThinkingPanelTitle {
+			t.Errorf("%s thinking panel title = %q, want %q", region.Label, thinking.Header.Title.Content, streamThinkingPanelTitle)
 		}
 		if len(thinking.Elements) != 1 {
 			t.Fatalf("%s thinking region has %d nested elements, want 1", region.Label, len(thinking.Elements))

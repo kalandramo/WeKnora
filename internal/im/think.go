@@ -196,7 +196,7 @@ func formatAgentRenderThinking(inner string) string {
 	if inner == "" {
 		return ""
 	}
-	return FormatIMDisplayContent(WrapThinkBlock(inner), StreamDisplayIntermediate)
+	return TransformThinkBlocks(WrapThinkBlock(inner), CollapsibleThinkStyle)
 }
 
 func formatQARenderThinking(reasoning string) string {
@@ -204,7 +204,19 @@ func formatQARenderThinking(reasoning string) string {
 	if reasoning == "" {
 		return ""
 	}
-	return TransformThinkBlocks(WrapThinkBlock(reasoning), RAGThinkingStyle)
+	return TransformThinkBlocks(WrapThinkBlock(reasoning), CollapsibleThinkStyle)
+}
+
+// CollapsibleThinkStyle renders reasoning for a card region that already carries
+// its own "思考过程" title (the Feishu collapsible header). Blockquote markers and
+// a duplicate "**思考过程**" header are dropped, so the region reads as plain
+// paragraphs instead of a quote nested in a titled panel.
+var CollapsibleThinkStyle = ThinkBlockStyle{
+	ThinkingHeader: "💭 正在思考...",
+	ThoughtHeader:  "",
+	LinePrefix:     "",
+	LineSuffix:     "",
+	Separator:      "\n\n",
 }
 
 // FormatIMDisplayContent formats raw stream content for the given display phase.

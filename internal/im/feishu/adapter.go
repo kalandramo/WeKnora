@@ -903,8 +903,16 @@ func contentDispositionFilename(cd string) string {
 // ──────────────────────────────────────────────────────────────────────
 
 const (
-	// streamThinkingElemID is the collapsible region showing the reasoning / tool
-	// progress. It is folded by default so long reasoning does not stretch the card.
+	// collapsiblePanelTag is the Card JSON 2.0 tag of the collapsible container.
+	// Spelling it "collapsible" is rejected by the card builder.
+	collapsiblePanelTag = "collapsible_panel"
+	// streamThinkingPanelID addresses the collapsible container itself.
+	streamThinkingPanelID = "stream_thinking_panel"
+	// streamThinkingPanelTitle is the collapsible header text.
+	streamThinkingPanelTitle = "💭 思考过程"
+	// streamThinkingElemID is the markdown element inside the collapsible that
+	// receives the reasoning / tool progress. The panel is folded by default so
+	// long reasoning does not stretch the card.
 	streamThinkingElemID = "stream_thinking"
 	// streamToolsElemID is the region showing tool progress / the final tool summary.
 	streamToolsElemID = "stream_tools"
@@ -915,6 +923,26 @@ const (
 	streamingElementID = streamAnswerElemID
 )
 
+// streamRegionThrottle decides when a card region may be repainted. Feishu caps
+// a single card entity at 10 component/OpenAPI operations per second; with three
+// regions repainted on every streamFlushInterval (300ms) tick the card sits
+// exactly on that ceiling, and dropped requests are silent.
+type streamRegionThrottle struct {
+	// minGrowth is how many additional runes justify an immediate repaint.
+	minGrowth int
+	// minInterval is the longest a pending change may wait before it is pushed.
+	minInterval time.Duration
+}
+
+// thinkingRegionThrottle throttles the folded reasoning region only. It is the
+// highest-frequency region (full text re-sent on every tick) and the least
+// time-critical one, so it is repainted once it grew by 200 runes or one second
+// passed. The answer and tool regions stay immediate.
+var thinkingRegionThrottle = streamRegionThrottle{
+	minGrowth:   200,
+	minInterval: time.Second,
+}
+
 // feishuStreamState tracks per-stream accumulated content.
 type feishuStreamState struct {
 	mu         sync.Mutex
@@ -924,6 +952,9 @@ type feishuStreamState struct {
 	// regionContent caches the last content pushed to each structured element so
 	// unchanged regions can skip a CardKit round-trip.
 	regionContent map[string]string
+	// regionPushedAt records when each region was last pushed, so a throttled
+	// region can tell "too soon to repaint" from "nothing new to say".
+	regionPushedAt map[string]time.Time
 	// Protected by feishuStreamsMu, independently of content/sequence updates.
 	lastActivityAt time.Time
 	ownerDone      <-chan struct{}
@@ -961,10 +992,11 @@ func cardSummaryPreview(content string) string {
 }
 
 // buildStreamingCardJSON builds a Card JSON 2.0 with streaming_mode enabled.
-// The card is split into three regions so the answer stays on top, a collapsible
-// block holds the (potentially long) reasoning, and a dedicated region shows the
-// tool progress / final tool summary. The placeholder text follows the region so
-// Lark users see English rather than the Chinese wording Feishu users expect.
+// The card is split into three regions: a collapsible block (folded by default)
+// holds the potentially long reasoning, a second region shows the tool progress
+// and the final tool summary, and the answer is streamed into the last one.
+// The placeholder text follows the region so Lark users see English rather than
+// the Chinese wording Feishu users expect.
 func buildStreamingCardJSON(region Region) string {
 	card := map[string]interface{}{
 		"schema": "2.0",
@@ -979,10 +1011,17 @@ func buildStreamingCardJSON(region Region) string {
 		"body": map[string]interface{}{
 			"elements": []map[string]interface{}{
 				{
-					"tag": "collapsible",
+					// Card JSON 2.0 tags the collapsible container
+					// "collapsible_panel"; the fold state is the top-level
+					// "expanded" field (default false = folded). A bare
+					// "collapsible" tag or a "header.folded" field is not part of
+					// the schema, and makes card creation fail with 200220, which
+					// drops the whole reply to the plain-text fallback.
+					"tag":        collapsiblePanelTag,
+					"element_id": streamThinkingPanelID,
+					"expanded":   false,
 					"header": map[string]interface{}{
-						"title": map[string]string{"tag": "plain_text", "content": "💭 思考过程"},
-						"folded": true,
+						"title": map[string]string{"tag": "plain_text", "content": streamThinkingPanelTitle},
 					},
 					"elements": []map[string]interface{}{
 						{
@@ -1023,6 +1062,11 @@ func (a *Adapter) StartStream(ctx context.Context, incoming *im.IncomingMessage)
 	cardJSON := buildStreamingCardJSON(a.region)
 	cardID, err := a.cardkitCreate(ctx, accessToken, cardJSON)
 	if err != nil {
+		// Without the JSON a rejected card is indistinguishable from a token or
+		// network failure, and the reply silently degrades to a plain-text
+		// message that renders raw Markdown.
+		logger.Warnf(ctx, "[%s] streaming card rejected, falling back to text: err=%v card_json=%s",
+			a.region.Label, err, cardJSON)
 		return "", fmt.Errorf("create card: %w", err)
 	}
 
@@ -1110,16 +1154,16 @@ func (a *Adapter) UpdateStructuredStream(ctx context.Context, incoming *im.Incom
 		return fmt.Errorf("get access token: %w", err)
 	}
 	if render.Thinking != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking); err != nil {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, &thinkingRegionThrottle); err != nil {
 			logger.Warnf(ctx, "[%s] update thinking element failed: %v", a.region.Label, err)
 		}
 	}
 	if render.Tools != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools); err != nil {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools, nil); err != nil {
 			logger.Warnf(ctx, "[%s] update tools element failed: %v", a.region.Label, err)
 		}
 	}
-	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer); err != nil {
+	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer, nil); err != nil {
 		logger.Warnf(ctx, "[%s] update answer element failed: %v", a.region.Label, err)
 		return err
 	}
@@ -1127,19 +1171,27 @@ func (a *Adapter) UpdateStructuredStream(ctx context.Context, incoming *im.Incom
 }
 
 // FinalizeStructuredStream pushes the final frame: the answer region gets the
-// final answer, the tools region shows the final summary, and the thinking
-// region is left collapsed (its content was already delivered during streaming).
+// final answer, the tools region shows the final summary, and the thinking region
+// receives whatever the throttled stream last withheld, so the tail of the
+// reasoning is not lost and the create-time placeholder never survives.
 func (a *Adapter) FinalizeStructuredStream(ctx context.Context, incoming *im.IncomingMessage, streamID string, render im.IMStreamRender) error {
 	accessToken, err := a.getTenantAccessToken(ctx)
 	if err != nil {
 		return fmt.Errorf("get access token: %w", err)
 	}
+	if render.Thinking != "" {
+		// nil throttle: the final flush is unconditional, otherwise a reasoning
+		// block shorter than minGrowth would keep its "正在思考..." placeholder.
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamThinkingElemID, render.Thinking, nil); err != nil {
+			logger.Warnf(ctx, "[%s] finalize thinking element failed: %v", a.region.Label, err)
+		}
+	}
 	if render.Tools != "" {
-		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools); err != nil {
+		if err := a.updateStreamElement(ctx, accessToken, streamID, streamToolsElemID, render.Tools, nil); err != nil {
 			logger.Warnf(ctx, "[%s] finalize tools element failed: %v", a.region.Label, err)
 		}
 	}
-	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer); err != nil {
+	if err := a.updateStreamElement(ctx, accessToken, streamID, streamAnswerElemID, render.Answer, nil); err != nil {
 		logger.Warnf(ctx, "[%s] finalize answer element failed: %v", a.region.Label, err)
 		return err
 	}
@@ -1147,9 +1199,10 @@ func (a *Adapter) FinalizeStructuredStream(ctx context.Context, incoming *im.Inc
 }
 
 // updateStreamElement updates a single card element, skipping the request when
-// the content is unchanged since the last push. The CardKit sequence is shared
+// the content is unchanged since the last push. A non-nil throttle additionally
+// rate-limits repaints of a low-priority region. The CardKit sequence is shared
 // per card, so a single monotonic counter drives every region update.
-func (a *Adapter) updateStreamElement(ctx context.Context, accessToken, cardID, elementID, content string) error {
+func (a *Adapter) updateStreamElement(ctx context.Context, accessToken, cardID, elementID, content string, throttle *streamRegionThrottle) error {
 	if content == "" {
 		return nil
 	}
@@ -1157,11 +1210,17 @@ func (a *Adapter) updateStreamElement(ctx context.Context, accessToken, cardID, 
 	if !ok {
 		return fmt.Errorf("unknown stream ID: %s", cardID)
 	}
+	now := time.Now()
 	state.mu.Lock()
 	if state.regionContent == nil {
 		state.regionContent = make(map[string]string)
 	}
-	if prev, exists := state.regionContent[elementID]; exists && prev == content {
+	prev, pushed := state.regionContent[elementID]
+	if pushed && prev == content {
+		state.mu.Unlock()
+		return nil
+	}
+	if pushed && throttle != nil && !throttle.allows(now, state.regionPushedAt[elementID], prev, content) {
 		state.mu.Unlock()
 		return nil
 	}
@@ -1176,9 +1235,27 @@ func (a *Adapter) updateStreamElement(ctx context.Context, accessToken, cardID, 
 	if state.regionContent == nil {
 		state.regionContent = make(map[string]string)
 	}
+	if state.regionPushedAt == nil {
+		state.regionPushedAt = make(map[string]time.Time)
+	}
 	state.regionContent[elementID] = content
+	state.regionPushedAt[elementID] = now
 	state.mu.Unlock()
 	return nil
+}
+
+// allows reports whether a changed region may be repainted now. Growth of zero
+// or less (retraction, re-render of shorter text) is always pushed: holding it
+// back would leave visibly stale content on the card.
+func (t streamRegionThrottle) allows(now, lastPushed time.Time, prev, next string) bool {
+	growth := utf8.RuneCountInString(next) - utf8.RuneCountInString(prev)
+	if growth <= 0 {
+		return true
+	}
+	if growth >= t.minGrowth {
+		return true
+	}
+	return now.Sub(lastPushed) >= t.minInterval
 }
 
 // EndStream disables streaming_mode, replaces the temporary summary, and cleans up state.
