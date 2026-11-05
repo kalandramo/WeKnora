@@ -38,6 +38,7 @@ import (
 
 	"github.com/Tencent/WeKnora/internal/agent/approval"
 	"github.com/Tencent/WeKnora/internal/agent/hitl"
+	"github.com/Tencent/WeKnora/internal/agent/mcpscope"
 	"github.com/Tencent/WeKnora/internal/agent/operations"
 	"github.com/Tencent/WeKnora/internal/application/repository"
 	dorisRepo "github.com/Tencent/WeKnora/internal/application/repository/retriever/doris"
@@ -184,6 +185,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	must(container.Provide(repository.NewGraphSearchEvidenceRepository))
 	must(container.Provide(repository.NewMCPServiceRepository))
 	must(container.Provide(repository.NewMCPToolApprovalRepository))
+	must(container.Provide(repository.NewMCPChatScopeRepository))
 	must(container.Provide(repository.NewAgentPromptRepository))
 	must(container.Provide(repository.NewAgentGrantRepository))
 	must(container.Provide(repository.NewAgentRunSuspensionRepository))
@@ -374,11 +376,15 @@ func BuildContainer(container *dig.Container) *dig.Container {
 		return hitl.NewBroker(prompts, rdb, opts...)
 	}))
 	must(container.Provide(service.NewSuspendedRunService))
+	// The chat-scope decorator wraps the MCP policy checker, so every exposure
+	// and execution decision (visibleTools, checkEnabled, Execute, list_servers)
+	// inherits it without a change inside the catalog or the gate.
 	must(container.Provide(func(
 		cfg *config.Config, s interfaces.MCPToolApprovalService, broker *hitl.Broker,
-		grants interfaces.AgentGrantRepository,
+		grants interfaces.AgentGrantRepository, scopes *repository.MCPChatScopeRepository,
 	) *approval.Gate {
-		return approval.NewGate(cfg, &approval.Adapter{Svc: s}, broker).WithGrants(grants)
+		checker := mcpscope.NewDecorator(&approval.Adapter{Svc: s}, scopes)
+		return approval.NewGate(cfg, checker, broker).WithGrants(grants)
 	}))
 	// Expose Gate as MCPApproval interface so AgentService and others can depend on the abstraction.
 	must(container.Provide(func(g *approval.Gate) approval.MCPApproval { return g }))
@@ -710,6 +716,7 @@ func BuildContainer(container *dig.Container) *dig.Container {
 	) *handler.MCPServiceHandler {
 		return handler.NewMCPServiceHandler(mcpService, toolApprovals, gate, models, agents).WithGrants(grants)
 	}))
+	must(container.Provide(handler.NewMCPChatScopeHandler))
 	must(container.Invoke(func(
 		sessions *session.Handler, mcp *handler.MCPServiceHandler,
 		broker *hitl.Broker, runs *service.SuspendedRunService, rewind *service.SessionRewindService,

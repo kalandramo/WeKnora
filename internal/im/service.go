@@ -546,6 +546,25 @@ func appendIMAuthNotice(body, notice string) string {
 	return body + "\n\n" + notice
 }
 
+// mcpChatIdentityOf maps an incoming IM message to the conversation identity the
+// MCP tool layer reads from the run context. Direct messages carry no group ID
+// (Feishu leaves ChatID empty), so the chat type is what distinguishes them —
+// which is also why a scope entry for a direct chat needs no ID.
+func mcpChatIdentityOf(msg *IncomingMessage) (types.MCPChatIdentity, bool) {
+	if msg == nil {
+		return types.MCPChatIdentity{}, false
+	}
+	platform := strings.TrimSpace(string(msg.Platform))
+	if platform == "" {
+		return types.MCPChatIdentity{}, false
+	}
+	return types.MCPChatIdentity{
+		Platform: platform,
+		ChatType: strings.TrimSpace(string(msg.ChatType)),
+		ChatID:   strings.TrimSpace(msg.ChatID),
+	}, true
+}
+
 func buildIMQARequest(
 	session *types.Session,
 	query string,
@@ -2547,6 +2566,13 @@ func (s *Service) handleMessageStream(ctx context.Context, msg *IncomingMessage,
 	// A hard pipeline deadline would kill multi-round agent reasoning prematurely.
 	qaCtx, qaCancel := context.WithCancel(ctx)
 	defer qaCancel()
+	// Stamp the originating conversation so MCP chat scoping can decide which
+	// tools this run may use. Runs that do not start from an IM message (Web,
+	// API, scheduled work) carry no identity, which keeps the upstream policy
+	// chain in charge for them.
+	if identity, ok := mcpChatIdentityOf(msg); ok {
+		qaCtx = types.WithMCPChatIdentity(qaCtx, identity)
+	}
 
 	useAgent := customAgent != nil && customAgent.IsAgentMode()
 	eventBus := event.NewEventBus()
@@ -3106,6 +3132,11 @@ loop:
 
 // fallbackNonStream is used when streaming initialization fails.
 func (s *Service) fallbackNonStream(ctx context.Context, msg *IncomingMessage, session *types.Session, customAgent *types.CustomAgent, kbIDs []string, attachments types.MessageAttachments, imageURLs []string, adapter Adapter, userKey string, tenant *types.Tenant) error {
+	// Same conversation stamp as the streaming path: the fallback runs the same
+	// tools and must be scoped the same way.
+	if identity, ok := mcpChatIdentityOf(msg); ok {
+		ctx = types.WithMCPChatIdentity(ctx, identity)
+	}
 	answer, err := s.runQA(ctx, session, msg.Content, customAgent, kbIDs, attachments, imageURLs, userKey, msg.Quote)
 	if err != nil {
 		logger.Errorf(ctx, "[IM] QA fallback failed: %v", err)
