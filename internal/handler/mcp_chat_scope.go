@@ -275,6 +275,13 @@ func normalizeScopeEntries(entries []types.MCPChatScopeEntry) ([]types.MCPChatSc
 		default:
 			return nil, errors.NewBadRequestError("chat_type must be group or direct")
 		}
+		// Platform is required: a blank one would otherwise be stored as "any
+		// platform", so a forgotten field would silently widen the rule from
+		// one group in one product to every IM product the tenant has wired.
+		if entry.Platform == "" {
+			return nil, errors.NewBadRequestError(
+				"platform is required on every entry (e.g. feishu, wecom)")
+		}
 		if entry.ChatType == "" {
 			return nil, errors.NewBadRequestError("chat_type is required on every entry")
 		}

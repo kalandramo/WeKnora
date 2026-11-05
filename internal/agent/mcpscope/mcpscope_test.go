@@ -186,7 +186,7 @@ func TestIsEnabledWildcards(t *testing.T) {
 	store := &fakeStore{scopes: map[string]types.MCPChatScope{
 		"any_group": scopedRow(t, "any_group",
 			types.MCPChatScopeEntry{Platform: "feishu", ChatType: "group", ChatID: "*"}),
-		"any_platform": scopedRow(t, "any_platform",
+		"blank_platform": scopedRow(t, "blank_platform",
 			types.MCPChatScopeEntry{ChatType: "group", ChatID: "oc_ops"}),
 	}}
 	d := NewDecorator(&fakeChecker{enabled: true}, store)
@@ -197,11 +197,20 @@ func TestIsEnabledWildcards(t *testing.T) {
 			t.Fatalf("chat_id * should allow %s, got ok=%v err=%v", chat, ok, err)
 		}
 	}
-	ok, err := d.IsEnabled(
-		ctxWith(types.MCPChatIdentity{Platform: "wecom", ChatType: "group", ChatID: "oc_ops"}),
-		1, "svc", "any_platform")
-	if err != nil || !ok {
-		t.Fatalf("an entry without platform should match any platform, got ok=%v err=%v", ok, err)
+
+	// The API requires a platform, so a stored row without one is hand-written.
+	// It must not become a rule covering every product: a blank platform matches
+	// nothing, including the platform the operator probably meant.
+	for _, platform := range []string{"wecom", "feishu"} {
+		ok, err := d.IsEnabled(
+			ctxWith(types.MCPChatIdentity{Platform: platform, ChatType: "group", ChatID: "oc_ops"}),
+			1, "svc", "blank_platform")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if ok {
+			t.Errorf("an entry without platform must not match %s", platform)
+		}
 	}
 }
 

@@ -225,12 +225,14 @@ func Allows(spec types.MCPChatScopeSpec, identity types.MCPChatIdentity) bool {
 }
 
 func entryMatches(entry types.MCPChatScopeEntry, identity types.MCPChatIdentity) bool {
-	if platform := strings.TrimSpace(entry.Platform); platform != "" &&
-		!strings.EqualFold(platform, identity.Platform) {
+	// Platform and chat type are always written explicitly — the API rejects an
+	// entry without them. Treating a blank one as a wildcard would turn a
+	// hand-inserted row into a rule that matches every product, which is the one
+	// direction this mechanism must never drift.
+	if !strings.EqualFold(strings.TrimSpace(entry.Platform), identity.Platform) {
 		return false
 	}
-	entryType := strings.ToLower(strings.TrimSpace(entry.ChatType))
-	if entryType != "" && entryType != strings.ToLower(identity.ChatType) {
+	if !strings.EqualFold(strings.TrimSpace(entry.ChatType), identity.ChatType) {
 		return false
 	}
 
@@ -242,7 +244,7 @@ func entryMatches(entry types.MCPChatScopeEntry, identity types.MCPChatIdentity)
 		// Only a direct chat is addressable without an ID. A group entry with no
 		// ID matches nothing: validation rejects it, and this keeps a hand-edited
 		// row from quietly opening every group in the tenant.
-		return entryType == "direct"
+		return strings.EqualFold(strings.TrimSpace(entry.ChatType), "direct")
 	default:
 		return chatID == strings.TrimSpace(identity.ChatID)
 	}
