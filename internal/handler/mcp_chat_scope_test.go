@@ -43,6 +43,11 @@ func TestNormalizeScopeEntries(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name:    "missing platform",
+			input:   []types.MCPChatScopeEntry{{ChatType: "group", ChatID: "oc_ops"}},
+			wantErr: true,
+		},
+		{
 			name:    "missing chat type",
 			input:   []types.MCPChatScopeEntry{{Platform: "feishu", ChatID: "oc_ops"}},
 			wantErr: true,

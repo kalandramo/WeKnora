@@ -55,9 +55,10 @@ type MCPChatScopeSpec struct {
 // MCPChatScopeEntry names one allowed conversation.
 type MCPChatScopeEntry struct {
 	// Platform is the im.Platform value (feishu, lark, wecom, dingtalk, …).
-	// Empty matches every platform.
+	// Required: the API rejects an entry without it, and matching is exact, so a
+	// blank value matches nothing rather than everything.
 	Platform string `json:"platform,omitempty"`
-	// ChatType is "group" or "direct" (im.ChatType). Empty matches both.
+	// ChatType is "group" or "direct" (im.ChatType). Required, matched exactly.
 	ChatType string `json:"chat_type,omitempty"`
 	// ChatID is the group/channel ID. Direct messages have no group ID, so an
 	// entry that allows a direct chat leaves this empty and relies on ChatType.
