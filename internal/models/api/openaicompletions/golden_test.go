@@ -723,6 +723,73 @@ func TestChatStream_MalformedToolCallFailsTheStream(t *testing.T) {
 	assert.Equal(t, "ok", answer.String(), "decoding stops at the bad chunk")
 }
 
+// Qwen-family chat templates reject any system/developer message that is not
+// messages[0] ("System message must be at the beginning.", HTTP 400 before
+// the request reaches the model). The opt-in single_leading_system compat
+// covers both sources of trailing instruction messages: RuntimeNotice
+// appended by this adapter, and system messages the agent engine appends to
+// the live transcript during recovery/collaboration.
+func TestSingleLeadingSystem(t *testing.T) {
+	msgs := []api.Message{
+		{Role: "system", Content: "stable policy"},
+		{Role: "user", Content: "original task"},
+		{Role: "assistant", Content: "draft"},
+		{Role: "system", Content: "[Runtime state: intermediate draft]"},
+		{Role: "system", Content: "revision instruction"},
+	}
+	opts := &api.Options{RuntimeNotice: `<runtime_event>{"type":"empty_response_retry"}</runtime_event>`}
+	roles := func(body map[string]any) []string {
+		wire := body["messages"].([]any)
+		out := make([]string, 0, len(wire))
+		for _, m := range wire {
+			out = append(out, m.(map[string]any)["role"].(string))
+		}
+		return out
+	}
+
+	t.Run("off_preserves_protocol_baseline", func(t *testing.T) {
+		c := newClient(t, nil)
+		require.Equal(t,
+			[]string{"system", "user", "assistant", "system", "system", "system"},
+			roles(bodyJSON(t, c, msgs, opts, true)))
+	})
+
+	t.Run("on_keeps_only_the_first_instruction", func(t *testing.T) {
+		c := newClient(t, func(cfg *Config) { cfg.Settings.SingleLeadingSystem = true })
+		body := bodyJSON(t, c, msgs, opts, true)
+		require.Equal(t,
+			[]string{"system", "user", "assistant", "user", "user", "user"},
+			roles(body))
+		// Role-only rewrite: no merging, no loss of runtime context.
+		wire := body["messages"].([]any)
+		require.Equal(t, "stable policy", wire[0].(map[string]any)["content"])
+		require.Equal(t, msgs[3].Content, wire[3].(map[string]any)["content"])
+		require.Equal(t, msgs[4].Content, wire[4].(map[string]any)["content"])
+		require.Equal(t, opts.RuntimeNotice, wire[5].(map[string]any)["content"])
+	})
+
+	t.Run("on_with_developer_role", func(t *testing.T) {
+		c := newClient(t, func(cfg *Config) {
+			cfg.Settings.SingleLeadingSystem = true
+			cfg.Settings.SupportsDeveloperRole = true
+			cfg.Reasoning = true
+		})
+		require.Equal(t,
+			[]string{"developer", "user", "assistant", "user", "user", "user"},
+			roles(bodyJSON(t, c, msgs, opts, true)))
+	})
+
+	t.Run("on_preserves_cache_prefix", func(t *testing.T) {
+		c := newClient(t, func(cfg *Config) { cfg.Settings.SingleLeadingSystem = true })
+		base := bodyJSON(t, c, msgs, &api.Options{}, true)["messages"].([]any)
+		extended := bodyJSON(t, c, msgs, opts, true)["messages"].([]any)
+		require.Len(t, extended, len(base)+1)
+		require.Equal(t, base, extended[:len(base)],
+			"the rewrite must be deterministic so the wire cache prefix stays byte-identical")
+		require.Equal(t, "user", extended[len(base)].(map[string]any)["role"])
+	})
+}
+
 // A body that runs out without [DONE] or any finish_reason is what a proxy
 // cutting the connection mid-answer looks like; it must not read as a stop.
 // [DONE] alone stays a clean end, since some vendors never send finish_reason.

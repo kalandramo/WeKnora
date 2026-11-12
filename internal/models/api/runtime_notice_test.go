@@ -47,6 +47,23 @@ func TestRuntimeNoticePreservesWireCachePrefix(t *testing.T) {
 		},
 
 		{
+			// Qwen-family chat templates reject a trailing system message.
+			// The opt-in compat emits the notice as a user message while
+			// keeping every preceding wire message byte-equivalent.
+			"completions_single_leading_system",
+			"messages",
+			"user",
+			openaicompletions.New(openaicompletions.Config{
+				Endpoint: endpoint,
+				Settings: func() api.OpenAICompletionsSettings {
+					s := api.DefaultOpenAICompletions()
+					s.SingleLeadingSystem = true
+					return s
+				}(),
+			}),
+		},
+
+		{
 			"responses",
 			"input",
 			"developer",
