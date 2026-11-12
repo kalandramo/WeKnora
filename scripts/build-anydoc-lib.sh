@@ -133,9 +133,48 @@ prepare_patched_anydoc
 # resolver drift must fail the build rather than ship an unaudited tree.
 cargo build --release --locked --manifest-path "$crate_dir/Cargo.toml" --target "$target"
 
+# The go command scans linker inputs listed in "#cgo LDFLAGS" and rejects any
+# archive carrying LTO IR sections (.llvmbc/.llvmcmd/.gnu.lto_*). That check
+# shipped as CVE-2026-97038 hardening in a Go 1.26.x security patch, so the
+# floating golang:1.26-bookworm tag started failing this build even though
+# nothing in the tree changed. Profile lto = "thin" makes dependency rlibs
+# embed LLVM bitcode, and rustc packs those members verbatim into the
+# staticlib. The bitcode is consumed only by rustc's own ThinLTO — cgo and the
+# Go linker never use it — so stripping the IR sections from the copy we hand
+# to cgo is lossless and keeps the archive acceptable to the go command.
+strip_lto_sections() {
+  local lib_path="$1"
+  local tmp_dir member name
+  if ! command -v objcopy >/dev/null 2>&1 || ! command -v objdump >/dev/null 2>&1; then
+    echo "error: binutils (objcopy/objdump) not found; cannot strip LTO sections that the go command rejects" >&2
+    return 1
+  fi
+  tmp_dir=$(mktemp -d)
+  if ! (cd "$tmp_dir" && ar x "$lib_path"); then
+    echo "error: cannot unpack $lib_path to strip LTO sections" >&2
+    rm -rf "$tmp_dir"
+    return 1
+  fi
+  for member in "$tmp_dir"/*; do
+    names=$(objdump -h "$member" 2>/dev/null \
+      | awk '{print $2}' \
+      | grep -E '^(\.llvmbc|\.llvmcmd|\.gnu\.lto_|\.gnu\.debuglto_|\.llvm\.lto)' || true)
+    if [ -z "$names" ]; then
+      continue
+    fi
+    echo "  stripping LTO sections from $(basename "$member"): $(echo "$names" | tr '\n' ' ')"
+    for name in $names; do
+      objcopy --remove-section="$name" "$member"
+    done
+  done
+  (cd "$tmp_dir" && ar rcs "$lib_path" -- *)
+  rm -rf "$tmp_dir"
+}
+
 dest="$crate_dir/lib/$lib_dir"
 mkdir -p "$dest"
 cp "$crate_dir/target/$target/release/$lib_name" "$dest/$lib_name"
+strip_lto_sections "$dest/$lib_name"
 
 echo "Wrote $dest/$lib_name"
 echo "Build WeKnora with the archive: go build -tags anydoc ./cmd/server"
