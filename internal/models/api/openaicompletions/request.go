@@ -191,6 +191,27 @@ func (c *Client) contentParts(parts []wirePart) any {
 	return strings.Join(texts, "\n")
 }
 
+// demoteTrailingInstructions enforces the single-leading-instruction shape
+// required by Qwen-family Jinja chat templates: only messages[0] may carry
+// an instruction role; any later system/developer message raises
+// "System message must be at the beginning." and the request is rejected
+// before it reaches the model.
+//
+// WeKnora has two sources of such messages: the protocol adapter appends
+// RuntimeNotice at the tail, and the agent engine can append system recovery
+// instructions to the live transcript. Rewriting happens here, at the wire
+// boundary, so every source is covered. Content is trusted runtime context,
+// never user input. Changing the role instead of merging into messages[0]
+// keeps the existing wire messages byte-identical, preserving the prompt
+// cache prefix that RuntimeNotice was designed around.
+func demoteTrailingInstructions(msgs []wireMessage) {
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == "system" || msgs[i].Role == "developer" {
+			msgs[i].Role = "user"
+		}
+	}
+}
+
 const metadataReasoningDetails = "reasoning_details"
 
 // buildBody assembles the request body. It returns a map so vendor-specific
@@ -200,10 +221,21 @@ func (c *Client) buildBody(messages []api.Message, opts *api.Options, stream boo
 	s := c.cfg.Settings
 	wireMessages := c.convertMessages(messages)
 	if opts != nil && opts.RuntimeNotice != "" {
+		// RuntimeNotice is appended after the conversation so stable
+		// instructions/history retain their cache prefix. Templates that only
+		// allow one leading system message cannot accept it in that role;
+		// emit it as a user message instead, matching the other adapters.
+		noticeRole := "system"
+		if s.SingleLeadingSystem {
+			noticeRole = "user"
+		}
 		wireMessages = append(
 			wireMessages,
-			c.convertMessages([]api.Message{{Role: "system", Content: opts.RuntimeNotice}})...,
+			c.convertMessages([]api.Message{{Role: noticeRole, Content: opts.RuntimeNotice}})...,
 		)
+	}
+	if s.SingleLeadingSystem {
+		demoteTrailingInstructions(wireMessages)
 	}
 	body := map[string]any{
 		"model":    c.cfg.Endpoint.Model,

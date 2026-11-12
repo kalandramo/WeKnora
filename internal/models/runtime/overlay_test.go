@@ -1,6 +1,7 @@
 package runtime_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -180,4 +181,44 @@ func TestLoadOverlay_ResolvesIconRelativeToConfigDir(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, testSVG, string(lab.Icon))
 	assert.Equal(t, []types.ModelType{types.ModelTypeKnowledgeQA}, lab.ModelTypes)
+}
+
+// The Qwen-family compat switch must be expressible in config/models.json:
+// DecodeCompat rejects unknown keys, and ApplyCompat matches overlay fields
+// to settings fields by Go name. This guards both halves of that contract.
+func TestSingleLeadingSystemCompatDecode(t *testing.T) {
+	require.False(t, api.DefaultOpenAICompletions().SingleLeadingSystem,
+		"the protocol baseline must stay unchanged when the switch is not configured")
+	var overlay api.OpenAICompletionsCompat
+	require.NoError(t, modelruntime.DecodeCompat(
+		json.RawMessage(`{"single_leading_system": true}`), &overlay))
+	settings := api.DefaultOpenAICompletions()
+	modelruntime.ApplyCompat(&settings, &overlay)
+	require.True(t, settings.SingleLeadingSystem)
+}
+
+// The same key must survive a deployment overlay and reach the resolved
+// settings for a chat model.
+func TestSingleLeadingSystemCompatOverlay(t *testing.T) {
+	registerTestVendors(t)
+	overlay := `{"providers": {"acme": {"compat": {"single_leading_system": true}}}}`
+	require.NoError(t, modelruntime.ApplyOverlay([]byte(overlay), t.TempDir()))
+	r, err := modelruntime.Resolve(modelruntime.Ref{Provider: "acme", Model: "acme-pro"})
+	require.NoError(t, err)
+	require.True(t, r.OpenAICompletions.SingleLeadingSystem)
+}
+
+// A model created from the UI carries its compat in spec.compat rather than
+// in config/models.json; that path must resolve the switch too.
+func TestSingleLeadingSystemModelRowCompat(t *testing.T) {
+	registerTestVendors(t)
+	r, err := modelruntime.Resolve(modelruntime.Ref{
+		Provider: "acme", Model: "acme-pro",
+		Override: &types.ModelSpecOverride{
+			API:    "openai-completions",
+			Compat: map[string]any{"single_leading_system": true},
+		},
+	})
+	require.NoError(t, err)
+	require.True(t, r.OpenAICompletions.SingleLeadingSystem)
 }

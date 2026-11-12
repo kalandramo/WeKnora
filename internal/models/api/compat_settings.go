@@ -38,6 +38,7 @@ type OpenAICompletionsCompat struct {
 	ReasoningEffortField         *string         `json:"reasoning_effort_field,omitempty"`
 	SupportsReasoningEffort      *bool           `json:"supports_reasoning_effort,omitempty"`
 	SupportsDeveloperRole        *bool           `json:"supports_developer_role,omitempty"`
+	SingleLeadingSystem          *bool           `json:"single_leading_system,omitempty"`
 	SupportsStore                *bool           `json:"supports_store,omitempty"`
 	SupportsUsageInStreaming     *bool           `json:"supports_usage_in_streaming,omitempty"`
 	SupportsTemperature          *bool           `json:"supports_temperature,omitempty"`
@@ -84,6 +85,15 @@ type OpenAICompletionsSettings struct {
 	// SupportsDeveloperRole switches the system prompt to the developer role
 	// on reasoning models.
 	SupportsDeveloperRole bool
+	// SingleLeadingSystem rewrites every instruction-role (system/developer)
+	// message after messages[0] to "user" at the wire boundary. Qwen-family
+	// Jinja chat templates raise "System message must be at the beginning."
+	// for any system message that is not first and reject the request with
+	// 400 before it reaches the model. WeKnora appends trusted runtime notices
+	// at the tail of the transcript, and the agent engine can append system
+	// recovery instructions mid-transcript, so this is opt-in per model:
+	// leaving it off preserves the protocol baseline and the cache prefix.
+	SingleLeadingSystem bool
 	// SupportsStore sends store:false (OpenAI keeps completions otherwise).
 	SupportsStore            bool
 	SupportsUsageInStreaming bool
