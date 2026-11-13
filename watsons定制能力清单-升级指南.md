@@ -1,9 +1,9 @@
 # watsons 分支定制能力清单与升级指南
 
-> 目的：把 `watsons` 分支相对上游的 29 个定制提交按主题聚类，标注每簇的冲突风险与升级处理方式，方便后续升级版本时快速 rebase。
+> 目的：把 `watsons` 分支相对上游的定制提交按主题聚类，标注每簇的冲突风险与升级处理方式，方便后续升级版本时快速 rebase。
 > 本文不提交 issue / PR，仅作内部升级参考。
-> **2026-11-12 增补**：新增簇 H（Qwen chat template 兼容，模型级可选开关，提交 `872a93c55`）。该簇尚未计入上方「29 提交」统计。
-> **2026-11-13 增补**：簇 H 新增「Helm 部署落地说明」小节（明确 `config/models.json` 是文件非数据库；UI「协议兼容覆盖(JSON)」= 数据库 `spec.compat`，已现网验证 400 消失；provider 级 Helm 挂载为备忘、未采用）。同日另有构建修复提交 `54b933c56`（anydoc LTO strip，见簇 I 候选），本文元数据计数尚未刷新。
+> **2026-11-12 增补**：新增簇 H（Qwen chat template 兼容，模型级可选开关，提交 `872a93c55`）。
+> **2026-11-13 增补**：① 簇 H 新增「Helm 部署落地说明」小节（明确 `config/models.json` 是文件非数据库；UI「协议兼容覆盖(JSON)」= 数据库 `spec.compat`，已现网验证 400 消失；provider 级 Helm 挂载为备忘、未采用）；② 新增簇 I（anydoc LTO 段剥离，构建修复提交 `54b933c56`），本文元信息计数已刷新为 31 个定制提交。
 
 ---
 
@@ -12,13 +12,13 @@
 | 项 | 值 |
 | --- | --- |
 | 上游基线 | `f17ee8a8d` — v0.9.0 release notes（#4864） |
-| 本地 HEAD | `89c6dfea7` — `fix(agent): require platform on chat-scope entries` |
-| 定制提交数 | 29（无合并提交） |
-| 改动总量 | 53 文件，+5803 / −61 |
-| 新增文件 | 31（绝大多数是测试与自有新包，冲突风险低） |
-| 修改既有文件 | 22（冲突风险源） |
-| 提交时间跨度 | 2026-10-15 → 2026-11-05 |
-| 上游 main 现状 | `4eea8b8f1`（持续 129+ 提交领先基线） |
+| 本地 HEAD | `e9e3d4d15` — `docs(watsons): add upgrade guide for watsons customizations`（含簇 H `872a93c55`、簇 I `54b933c56`；本行为纯文档提交，不计入下方「定制提交数」） |
+| 定制提交数 | 31（无合并提交；原 29 + 簇 H `872a93c55` + 簇 I `54b933c56`） |
+| 改动总量 | 60 文件，+6221 / −62（含本升级指南文档 +211 行；不含文档则为 59 文件、+6001 / −62） |
+| 新增文件 | 32（绝大多数是测试与自有新包，冲突风险低；含本升级指南文档 1 个） |
+| 修改既有文件 | 28（冲突风险源；含簇 H 5 文件、簇 I 1 文件） |
+| 提交时间跨度 | 2026-10-15 → 2026-11-13 |
+| 上游 main 现状 | `4eea8b8f1`（持续 129+ 提交领先基线）；watsons 当前领先 upstream/main 共 32 提交 |
 
 **关键事实**
 - PR #5159（Helm `app.podAnnotations`）已于 **2026-11-09 合入上游 main**。上游 `helm/values.yaml:178`、`helm/templates/app.yaml:40`、`helm/README.md:303` 已含该功能。→ watsons 的 `9a90b039b` 在 rebase 时必须**丢弃**。
@@ -40,7 +40,7 @@
 
 ---
 
-## 2. 按簇梳理（29 提交 → 7 簇 + 簇 H）
+## 2. 按簇梳理（31 提交 → 7 簇 + 簇 H + 簇 I）
 
 风险等级口径：**Trivial**（1 行级）/ **Low**（新增文件为主 + 1 处钩子）/ **Medium**（改动上游高频文件或重构既有逻辑）/ **High**（结构性重写且上游可能独立演进）。
 
@@ -154,6 +154,18 @@
 - **处理建议**：整簇保留。升级时先确认上游是否已原生处理该约束（例如把 RuntimeNotice 改为 user 或提供同类开关）；若已处理，本簇可丢弃。
 - **回流状态**：未提 issue / PR（按要求保持 watsons 私有）。
 
+### 簇 I — anydoc LTO 段剥离（构建修复，Docker build 不再报 `disallowed LTO section`）
+- **提交**：`54b933c56`（fix(anydoc): strip LTO sections from the static archive handed to cgo）
+- **问题**：`golang:1.26-bookworm` 是浮动 tag，CI/构建机 pull 到含 Go 安全补丁（CVE-2026-97038，对应 `cmd/go/internal/work/security.go` 对 `#cgo LDFLAGS` 归档的加固）的新摘要后，`go build` 在链接 cgo 静态库阶段会扫描并拒绝归档内嵌的 LTO IR 段（`.llvmbc` / `.llvmcmd` / `.gnu.lto_*`）。根因是 `third_party/anydoc-go/Cargo.toml` 设 `lto="thin"`，使依赖 rlib 内嵌 LLVM bitcode，其 staticlib 打包时被原样收编进 `.a`，而 cgo 实际用不到这些段——`docker build-prod`（`make build-prod GO_BUILD_TAGS=anydoc`）在第 13/14 步失败：`disallowed LTO section ".llvmbc" in #cgo LDFLAGS`。
+- **改动文件**（1 个，修改既有）：
+  | 文件 | 改动 |
+  | --- | --- |
+  | `scripts/build-anydoc-lib.sh` | 新增 `strip_lto_sections()`（+39 行）：cargo 构建后解包 `.a` → 用 `objdump -h` 逐成员检测 LTO 段（兼容 ELF/COFF，故不用仅认 ELF 的 `readelf`）→ `objcopy --remove-section` 剥离 → `ar rcs` 重建归档，再交给 cgo |
+- **开启方式**：无开关，构建脚本内自动执行；仅作用于 `anydoc` build tag 的链接阶段，运行时无行为变化。
+- **风险**：**Low**（单脚本 +39 行，且仅影响 `anydoc` 构建路径；但该脚本属构建期关键文件，若上游重写 anydoc 构建流程需重贴）。
+- **处理建议**：整提交保留。rebase 时核对上游是否已在 `scripts/build-anydoc-lib.sh` 或 Rust 侧（`lto` 配置 / 改走 dylib 而非 staticlib）原生规避；若上游已修复，本簇可丢弃。
+- **验证**：2026-11-13 在 Linux 构建机重新触发 `docker build`，编译成功，新镜像同时含簇 H 与簇 I。
+
 ---
 
 ## 3. 冲突热点排名（修改的既有文件，按上游自基线改动次数）
@@ -166,6 +178,7 @@
 | 2 | `docker/Dockerfile.app` | F | 环境补丁，手工重贴 |
 | 1 | `internal/router/router.go` | D | 重加路由注册 1 行 |
 | 1 | `scripts/build_browserskill.sh` | F | 低 |
+| 待核对 | `scripts/build-anydoc-lib.sh` | I | 比对上游是否原生规避 LTO（否则重贴 `strip_lto_sections`） |
 | 1 | `internal/models/limiter/governor.go` | E | 比对限流语义 |
 | 1 | `internal/models/api/openaicompletions/client.go` | E | 比对埋点 |
 | 待核对 | `internal/models/api/compat_settings.go` | H | 上游若已加同名字段或重构 compat，需重贴 |
@@ -205,6 +218,7 @@
 - [ ] `go test ./internal/im/... ./internal/agent/mcpscope/ ./internal/agent/approval/ ./internal/application/repository/` 通过
 - [ ] `go test ./internal/models/api/... ./internal/models/runtime/...` 通过（`runtime` 包的 `TestApplyOverlay_IconRejectsUncontainedPaths` 在 Windows 上是既有平台失败，与定制无关）
 - [ ] 簇 H：确认 `config/models.json` 已为 Qwen 模型配置 `single_leading_system: true`，其它模型保持默认关闭
+- [ ] 簇 I：确认 `scripts/build-anydoc-lib.sh` 的 `strip_lto_sections()` 已随仓库升级保留（或上游已原生规避 LTO，可丢弃本簇）
 - [ ] 现网复测：触发一次「空响应重试 / 长答案截断」路径，确认不再出现 400 `System message must be at the beginning.`
 - [ ] `helm template` 渲染验证（确认 podAnnotations 来自上游、未重复）
 - [ ] 现网验证：飞书卡片折叠 + 占位、@所有人丢弃、bot 互答拦截、MCP 群聊白名单、/metrics 端点
