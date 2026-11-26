@@ -76,7 +76,7 @@ container.go:378  approval.NewGate(cfg, mcpscope.NewDecorator(&approval.Adapter{
 
 ## 3. 数据结构
 
-表 `mcp_chat_scopes`（PostgreSQL 迁移 `000135`，SQLite 迁移 `000052`）：
+表 `mcp_chat_scopes`（v0.9.1 基线：PostgreSQL 迁移 `000138`，SQLite 迁移 `000054`；原 v0.9.0 基线为 `000135` / `000052`，因上游已占用而重编号）：
 
 | 列 | 类型 | 说明 |
 | --- | --- | --- |
@@ -188,8 +188,8 @@ curl -X PUT https://<weknora>/api/v1/mcp-chat-scopes \
 | `internal/agent/mcpscope/mcpscope.go` | 新增 | 装饰器、匹配、spec 解析 |
 | `internal/handler/mcp_chat_scope.go` | 新增 | List / Upsert / Delete + 校验 |
 | `internal/router/routes_mcp_chat_scope.go` | 新增 | 路由注册 |
-| `migrations/versioned/000135_mcp_chat_scope*` | 新增 | PostgreSQL |
-| `migrations/sqlite/000052_mcp_chat_scope*` | 新增 | SQLite |
+| `migrations/versioned/000138_mcp_chat_scope*` | 新增 | PostgreSQL |
+| `migrations/sqlite/000054_mcp_chat_scope*` | 新增 | SQLite |
 | `internal/container/container.go` | 改 4 行 | Provide repository / handler，Gate 包装饰器 |
 | `internal/router/router.go` | 改 2 行 | params 字段 + 注册调用 |
 | `internal/im/service.go` | 改 6 行 | `mcpChatIdentityOf` + 两条链路 ctx stamp |
@@ -200,6 +200,6 @@ curl -X PUT https://<weknora>/api/v1/mcp-chat-scopes \
 
 ## 8. 升级注意
 
-1. **迁移编号**：PostgreSQL 用 `000135`、SQLite 用 `000052`。上游若在同一区间新增迁移，把本文件重编号即可（本表可随时 drop 重建，无数据依赖）。
+1. **迁移编号**：v0.9.1 起 PostgreSQL 用 `000138`、SQLite 用 `000054`（原 `000135`/`000052` 已被上游 `audit_log_actor_width`/`credential_vault` 占用）。本表可随时 drop 重建，无数据依赖；若后续上游继续占用号段，重编号即可。
 2. **唯一上游接触点**：`container.go` 的 Gate Provide 与 `router.go` 的两行。上游改动这两个文件时，冲突解决方式是重新加回这两处，不涉及逻辑取舍。
 3. **回滚**：删除 `container.go` 的装饰器包装即恢复原行为（表留着也无副作用）；彻底回滚再执行 down 迁移。

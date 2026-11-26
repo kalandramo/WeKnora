@@ -1,4 +1,4 @@
--- IM-conversation allowlists for MCP tools (see versioned/000135).
+-- IM-conversation allowlists for MCP tools (see versioned/000138).
 -- A row exists only for tools an operator explicitly scoped; tools without a row
 -- keep the upstream policy chain untouched.
 CREATE TABLE IF NOT EXISTS mcp_chat_scopes (

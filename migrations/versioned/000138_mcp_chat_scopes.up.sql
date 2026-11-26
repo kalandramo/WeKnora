@@ -1,4 +1,4 @@
-DO $$ BEGIN RAISE NOTICE '[Migration 000135] Creating mcp_chat_scopes...'; END $$;
+DO $$ BEGIN RAISE NOTICE '[Migration 000138] Creating mcp_chat_scopes...'; END $$;
 
 -- IM-conversation allowlists for MCP tools.
 --
